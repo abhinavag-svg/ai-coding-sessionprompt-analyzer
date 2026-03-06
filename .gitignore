@@ -1,0 +1,17 @@
+# Local env/config
+.env
+.claude/
+
+# Virtual envs
+.venv/
+venv/
+
+# Python artifacts
+__pycache__/
+*.pyc
+
+# Generated reports / analysis outputs
+report*.md
+
+# OS/editor noise
+.DS_Store

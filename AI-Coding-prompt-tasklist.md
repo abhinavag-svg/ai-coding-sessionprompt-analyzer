@@ -1,15 +1,14 @@
 Phase 0 — Project Setup (Day 0–1)
 
 Repository Setup
-	•	Create GitHub repo
-	•	Setup Poetry or pipenv
-	•	Add .env support
-	•	Configure pre-commit hooks (black, ruff)
-	•	Add structured logging (loguru or structlog)
+	•	Create GitHub repo - Done
+	•	Setup homebrew or pip - Done
+	•	Add .env support - Done
+	•	Add structured logging (loguru) - Done
 
 CLI Framework
-	•	Install typer (clean CLI UX)
-	•	Create ai_dev/cli.py
+	•	Install typer (clean CLI UX) - Done
+	•	Create ai_dev/cli.py - Done
 	•	Add base command: ai-dev analyze <path>
 
 Phase 1 — Parsing Layer
@@ -171,3 +170,23 @@ Phase 7 — Trend Mode (Optional)
 	•	Aggregate N sessions
 	•	Compute moving average score
 	•	Show trend direction
+
+Decision Notes — Composite Recalibration (Mar 2026)
+	•	Context Scope now follows benchmark bands for tokens per turn:
+		•	Excellent: 1k–8k
+		•	Normal: 8k–20k
+		•	Heavy: 20k–40k
+		•	Over-context: >40k sustained
+	•	Industry guardrails used in scoring penalties:
+		•	Median tokens/turn target < 12k
+		•	P90 tokens/turn target < 30k
+	•	Composite weights are optimized for token efficiency:
+		•	Specificity 30%
+		•	Correction 25%
+		•	Context Scope 30%
+		•	Model Efficiency 15%
+	•	Correction attribution is split (deterministic, no LLM):
+		•	Prompt-induced rework
+		•	Model-induced rework
+		•	Unknown rework
+	•	Reports now include avg/median/P90 tokens per turn and over-40k turn ratio.
