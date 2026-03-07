@@ -36,7 +36,7 @@ pip install -e .
 ## Quick Start
 
 Analyze a folder containing Claude session JSONL files:
-
+Typical Claude session logs are stored in `~/.claude/logs/` or `~/.claude/logs/2024-06-01/`
 ```bash
 ai-dev analyze-v2 /path/to/jsonl/root --dedupe --export report.md
 ```
@@ -137,7 +137,7 @@ python -m ai_dev.cli analyze-v2 --help
 
 ## Specification
 
-See `SPEC.md` for the public project spec and architecture summary.
+See `docs/specs/product-spec.md` for the public project spec and architecture summary.
 
 ## Project Governance
 
