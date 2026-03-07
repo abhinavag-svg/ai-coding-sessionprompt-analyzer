@@ -46,6 +46,11 @@ Or without editable install:
 ```bash
 python -m ai_dev.cli analyze-v2 /path/to/jsonl/root --dedupe --export report.md
 ```
+## Sample Report
+
+![Summary Section](docs/images/1.png)
+![Highest Cost Sessions](docs/images/2.png)
+![Best Sessions](docs/images/3.png)
 
 ## Core Commands
 
