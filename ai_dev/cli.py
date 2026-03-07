@@ -9,6 +9,7 @@ import typer
 from .costing import estimate_no_cache_cost, load_pricing_file, resolve_cost
 from .dedupe import dedupe_events
 from .feature_extractor import build_feature_bundle
+from .llm_recommendations import RecommendationConfig, enrich_report_with_recommendations
 from .models import CostMode
 from .parser import find_jsonl_files, load_events
 from .analyzer_v2 import analyze_v2
@@ -432,6 +433,11 @@ def analyze_v2_command(
     dedupe: bool = typer.Option(True, "--dedupe/--no-dedupe", help="Enable event deduplication by request/response ids."),
     pricing_file: Optional[Path] = typer.Option(None, "--pricing-file", help="Optional JSON file with split_per_1k and blended_per_1k pricing maps."),
     scoring_config: Optional[Path] = typer.Option(None, "--scoring-config", help="Optional JSON file with scoring thresholds and multipliers."),
+    llm_recommendations: bool = typer.Option(False, "--llm-recommendations", help="Generate project-level recommendations with a local Ollama model."),
+    llm_session_recommendations: bool = typer.Option(False, "--llm-session-recommendations", help="Also generate per-session recommendations. Implies --llm-recommendations."),
+    llm_model: str = typer.Option("llama3.2:3b", "--llm-model", help="Ollama model to use for report recommendations."),
+    llm_endpoint: str = typer.Option("http://localhost:11434", "--llm-endpoint", help="Ollama HTTP endpoint."),
+    llm_timeout_sec: float = typer.Option(30.0, "--llm-timeout-sec", help="Timeout in seconds for Ollama availability and generation calls."),
 ):
     """Run the V2 analyzer."""
     analysis = _load_analysis_inputs(
@@ -451,6 +457,16 @@ def analyze_v2_command(
         pricing_file=analysis["pricing_file"],
         config=analysis["config"],
     )
+    if llm_recommendations or llm_session_recommendations:
+        report = enrich_report_with_recommendations(
+            report,
+            RecommendationConfig(
+                endpoint=llm_endpoint,
+                model=llm_model,
+                timeout_sec=llm_timeout_sec,
+                include_session_recommendations=llm_session_recommendations,
+            ),
+        )
     render_cli_report(report)
 
     if export:

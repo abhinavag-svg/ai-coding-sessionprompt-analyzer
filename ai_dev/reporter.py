@@ -34,11 +34,28 @@ _V2_DIMENSION_LABELS = {
     "session_convergence": "Session Convergence",
 }
 
+_PROJECT_RECOMMENDATION_SECTIONS = (
+    ("you_did_well", "You did well", "green"),
+    ("absolutely_must_do", "Absolutely must do", "red"),
+    ("nice_to_do", "Nice to do", "yellow"),
+)
+
+
+def _project_recommendation_sections(project_recs: Dict[str, Any]) -> List[tuple[str, str, List[str]]]:
+    sections = project_recs.get("sections") if isinstance(project_recs.get("sections"), dict) else {}
+    out: List[tuple[str, str, List[str]]] = []
+    for key, label, style in _PROJECT_RECOMMENDATION_SECTIONS:
+        items = list(sections.get(key) or project_recs.get(key) or [])
+        if items:
+            out.append((label, style, items))
+    return out
+
 
 def render_cli_report(report: Dict[str, Any], console: Console | None = None) -> None:
     console = console or Console()
 
     v2 = report.get("v2") or {}
+    recommendations = report.get("recommendations") or {}
     scores = (v2.get("scores") or report.get("scores") or {})
     session = report["session_features"]
     rules = report["rule_violations"]
@@ -54,6 +71,25 @@ def render_cli_report(report: Dict[str, Any], console: Console | None = None) ->
             f"Cumulative recoverable cost: ${float(project_rollup.get('recoverable_cost_total_usd', 0.0) or 0.0):.2f}"
         )
         console.print(Panel(summary_text, title="V2 Project Summary"))
+
+        project_recs = recommendations.get("project") or {}
+        if project_recs:
+            section_blocks = _project_recommendation_sections(project_recs)
+            if section_blocks:
+                for label, style_name, bullets in section_blocks:
+                    console.print(
+                        Panel(
+                            "\n".join(f"- {bullet}" for bullet in bullets),
+                            title=f"Project Recommendations (LLM): {label}",
+                            border_style=style_name,
+                        )
+                    )
+            else:
+                bullets = list(project_recs.get("bullets") or [])
+                if bullets:
+                    console.print(Panel("\n".join(f"- {bullet}" for bullet in bullets), title="Project Recommendations (LLM)"))
+                elif project_recs.get("message"):
+                    console.print(Panel(str(project_recs.get("message")), title="Project Recommendations (LLM)"))
 
         dim_table = Table(title="Project Dimension Scores (V2)", show_header=True, header_style="bold")
         dim_table.add_column("Dimension")
@@ -90,6 +126,20 @@ def render_cli_report(report: Dict[str, Any], console: Console | None = None) ->
                     str(len(row.get("flags") or [])),
                 )
             console.print(session_table)
+
+            session_recommendations = {
+                str(item.get("session_id", "unknown")): item for item in list(recommendations.get("per_session") or [])
+            }
+            for row in per_session_v2[:20]:
+                rec = session_recommendations.get(str(row.get("session_id", "unknown"))) or {}
+                bullets = list(rec.get("bullets") or [])
+                if bullets:
+                    console.print(
+                        Panel(
+                            "\n".join(f"- {bullet}" for bullet in bullets),
+                            title=f"Session Recommendations (LLM): {row.get('session_id', 'unknown')}",
+                        )
+                    )
     else:
         # Legacy V1 output
         style = _score_style(float(scores["composite"]))
@@ -366,6 +416,7 @@ def render_cli_report(report: Dict[str, Any], console: Console | None = None) ->
 
 def build_markdown_report(report: Dict[str, Any]) -> str:
     v2 = report.get("v2") or {}
+    recommendations = report.get("recommendations") or {}
     scores = (v2.get("scores") or report.get("scores") or {})
     session = report["session_features"]
     rules = report["rule_violations"]
@@ -377,11 +428,31 @@ def build_markdown_report(report: Dict[str, Any]) -> str:
     if v2 and isinstance(v2.get("project_rollup"), dict):
         project_rollup = v2.get("project_rollup") or {}
         per_session_v2 = v2.get("per_session_v2") or []
+        session_recs = {
+            str(item.get("session_id", "unknown")): item for item in list(recommendations.get("per_session") or [])
+        }
         lines.append("## Summary (V2)")
         lines.append(f"- Project composite score: **{project_rollup.get('composite', 0.0)}/100**")
         lines.append(f"- Sessions analyzed: **{int(project_rollup.get('session_count', 0) or 0)}**")
         lines.append(f"- Project cumulative recoverable cost: `${float(project_rollup.get('recoverable_cost_total_usd', 0.0) or 0.0):.2f}`")
         lines.append("")
+
+        project_recs = recommendations.get("project") or {}
+        if project_recs:
+            lines.append("## Project Recommendations (LLM)")
+            section_blocks = _project_recommendation_sections(project_recs)
+            if section_blocks:
+                for label, _, bullets in section_blocks:
+                    lines.append(f"### {label}")
+                    for bullet in bullets:
+                        lines.append(f"- {bullet}")
+                    lines.append("")
+            elif project_recs.get("bullets"):
+                for bullet in list(project_recs.get("bullets") or []):
+                    lines.append(f"- {bullet}")
+            elif project_recs.get("message"):
+                lines.append(f"- {project_recs.get('message')}")
+            lines.append("")
 
         lines.append("## Project Dimension Scores (V2)")
         for dim_id, value in (project_rollup.get("dimensions") or {}).items():
@@ -397,6 +468,13 @@ def build_markdown_report(report: Dict[str, Any]) -> str:
                     f"- Session `{row.get('session_id','unknown')}` | composite `{float((row.get('scores') or {}).get('composite', 0.0) or 0.0):.2f}` "
                     f"| shape `{(row.get('convergence') or {}).get('shape', 'unknown')}` | recoverable `${float(row.get('recoverable_cost_total_usd', 0.0) or 0.0):.2f}`"
                 )
+                rec = session_recs.get(str(row.get("session_id", "unknown"))) or {}
+                if rec.get("bullets"):
+                    lines.append("  - recommendations (LLM):")
+                    for bullet in list(rec.get("bullets") or []):
+                        lines.append(f"    - {bullet}")
+                elif rec.get("message") and rec.get("status") not in {"skipped", "ready"}:
+                    lines.append(f"  - recommendations (LLM): {rec.get('message')}")
                 rate = row.get("cost_rate") or {}
                 lines.append(
                     f"  - cost rate: `{float(rate.get('usd_per_token', 0.0) or 0.0):.6f}` USD/token "
