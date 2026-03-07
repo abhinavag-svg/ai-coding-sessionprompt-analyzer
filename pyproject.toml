@@ -6,11 +6,30 @@ build-backend = "setuptools.build_meta"
 name = "ai-coding-prompt-optimizer"
 version = "0.1.0"
 description = "AI coding prompt analysis CLI"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = [
   "typer>=0.12.0",
   "rich>=13.0.0",
 ]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Environment :: Console",
+  "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Homepage = "https://github.com/abhinavag-svg/ai-coding-prompt-optimizer"
+Repository = "https://github.com/abhinavag-svg/ai-coding-prompt-optimizer"
+Issues = "https://github.com/abhinavag-svg/ai-coding-prompt-optimizer/issues"
 
 [project.scripts]
 ai-dev = "ai_dev.cli:app"

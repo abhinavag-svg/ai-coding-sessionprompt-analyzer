@@ -41,11 +41,11 @@ class OllamaRecommendationProvider:
                 "endpoint": self._config.endpoint,
             }
 
-        models = payload.get("models") if isinstance(payload, dict) and isinstance(payload.get("models"), list) else []
+        raw_models = payload.get("models") if isinstance(payload, dict) else []
+        models: List[Dict[str, Any]] = [item for item in raw_models if isinstance(item, dict)] if isinstance(raw_models, list) else []
         names = {
             str(item.get("name") or item.get("model") or "")
             for item in models
-            if isinstance(item, dict)
         }
         if self._config.model not in names:
             return {

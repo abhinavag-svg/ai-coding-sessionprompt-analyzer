@@ -1,0 +1,153 @@
+# AI Coding Prompt Optimizer
+
+Analyze Claude Code session logs and generate efficiency reports, cost diagnostics, and actionable recommendations.
+
+This project reads local JSONL session logs, computes deterministic efficiency signals, and can optionally add local LLM recommendations using Ollama.
+
+## Why This Exists
+
+Most token cost waste comes from tool-output churn (file reads, command outputs, repeated correction loops), not only from user prompt text. This CLI helps make those patterns visible and fixable.
+
+## Project Status
+
+- Language: Python
+- Interface: CLI (`ai-dev`)
+- Analyzer modes: V1 (`analyze`) and V2 (`analyze-v2`)
+- Optional local recommendations: Ollama-backed
+
+## Installation
+
+### Option 1: Virtual environment + requirements
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Option 2: Install as package (recommended)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+## Quick Start
+
+Analyze a folder containing Claude session JSONL files:
+
+```bash
+ai-dev analyze-v2 /path/to/jsonl/root --dedupe --export report.md
+```
+
+Or without editable install:
+
+```bash
+python -m ai_dev.cli analyze-v2 /path/to/jsonl/root --dedupe --export report.md
+```
+
+## Core Commands
+
+### V1 analysis
+
+```bash
+ai-dev analyze <path> [--export report.md]
+```
+
+### V2 analysis (recommended)
+
+```bash
+ai-dev analyze-v2 <path> [--export report.md]
+```
+
+### Cost range across pricing profiles
+
+```bash
+ai-dev cost-range <path> [--conservative-file pricing.conservative.json] [--aggressive-file pricing.aggressive.json]
+```
+
+## V2 Recommendation Flags
+
+Project-level recommendations are the default recommendation scope when enabled.
+
+```bash
+ai-dev analyze-v2 <path> --llm-recommendations
+```
+
+Enable session-level recommendations as an opt-in extension:
+
+```bash
+ai-dev analyze-v2 <path> --llm-session-recommendations
+```
+
+Ollama runtime options:
+
+```bash
+--llm-model llama3.2:3b
+--llm-endpoint http://localhost:11434
+--llm-timeout-sec 30
+```
+
+## Ollama Setup (Optional)
+
+```bash
+ollama serve
+ollama pull llama3.2:3b
+```
+
+If Ollama or the model is unavailable, the report still renders and recommendation sections degrade gracefully with setup guidance.
+
+## Input Expectations
+
+- Input path is scanned recursively for `.jsonl` files.
+- Works with billable-only mode or all-events mode.
+- Supports deduplication by request/response IDs.
+
+## Configurable Inputs
+
+- Pricing model overrides: `--pricing-file`
+- Scoring thresholds: `--scoring-config`
+
+See sample files in repo root:
+
+- `pricing.example.json`
+- `scoring.example.json`
+
+## Development
+
+Install dev dependencies:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+Run tests:
+
+```bash
+python -m unittest discover -s tests
+```
+
+Show CLI help:
+
+```bash
+python -m ai_dev.cli --help
+python -m ai_dev.cli analyze-v2 --help
+```
+
+## Specification
+
+See `SPEC.md` for the public project spec and architecture summary.
+
+## Project Governance
+
+- Contribution guide: `CONTRIBUTING.md`
+- Code of conduct: `CODE_OF_CONDUCT.md`
+
+## Packaging Recommendation
+
+This should be distributed as a Python package (not npm), because the codebase, runtime, and dependency graph are all Python-native.
+
+## License
+
+MIT. See `LICENSE`.
