@@ -7,6 +7,8 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 
+from .lineage import parent_graph_lineage, session_lineage_overview, time_window_lineage
+
 
 def _score_style(score: float) -> str:
     if score >= 85:
@@ -15,28 +17,95 @@ def _score_style(score: float) -> str:
         return "yellow"
     return "red"
 
+def _severity_style(sev: str) -> str:
+    s = (sev or "").lower()
+    if s in {"high", "critical", "red"}:
+        return "red"
+    if s in {"medium", "yellow"}:
+        return "yellow"
+    return "green"
+
+
+_V2_DIMENSION_LABELS = {
+    "specificity": "Specificity",
+    "context_scope": "Context Scope",
+    "correction_discipline": "Correction Discipline",
+    "model_stability": "Model Stability",
+    "session_convergence": "Session Convergence",
+}
+
 
 def render_cli_report(report: Dict[str, Any], console: Console | None = None) -> None:
     console = console or Console()
 
-    scores = report["scores"]
+    v2 = report.get("v2") or {}
+    scores = (v2.get("scores") or report.get("scores") or {})
     session = report["session_features"]
     rules = report["rule_violations"]
 
-    style = _score_style(scores["composite"])
-    summary_text = (
-        f"Composite Score: [bold {style}]{scores['composite']}/100[/]\n"
-        f"Grade: [bold]{scores['grade']}[/]\n"
-        f"Diagnosis: {scores['diagnosis']}"
-    )
-    console.print(Panel(summary_text, title="Prompt Quality Summary"))
+    if v2 and isinstance(v2.get("project_rollup"), dict):
+        project_rollup = v2.get("project_rollup") or {}
+        per_session_v2 = v2.get("per_session_v2") or []
+        composite = float(project_rollup.get("composite", scores.get("composite", 0.0)) or 0.0)
+        style = _score_style(composite)
+        summary_text = (
+            f"Project Composite Score: [bold {style}]{composite:.2f}/100[/]\n"
+            f"Sessions: [bold]{int(project_rollup.get('session_count', 0) or 0)}[/]\n"
+            f"Cumulative recoverable cost: ${float(project_rollup.get('recoverable_cost_total_usd', 0.0) or 0.0):.2f}"
+        )
+        console.print(Panel(summary_text, title="V2 Project Summary"))
 
-    score_table = Table(title="Subscores", show_header=True, header_style="bold")
-    score_table.add_column("Metric")
-    score_table.add_column("Score", justify="right")
-    for key, value in scores["subscores"].items():
-        score_table.add_row(key, f"{value:.2f}/25")
-    console.print(score_table)
+        dim_table = Table(title="Project Dimension Scores (V2)", show_header=True, header_style="bold")
+        dim_table.add_column("Dimension")
+        dim_table.add_column("Weighted Score", justify="right")
+        for dim_id, value in (project_rollup.get("dimensions") or {}).items():
+            dim_table.add_row(
+                _V2_DIMENSION_LABELS.get(dim_id, dim_id),
+                str(value),
+            )
+        console.print(dim_table)
+
+        flag_freq = project_rollup.get("flag_frequency") or {}
+        if flag_freq:
+            flag_table = Table(title="Project Flag Frequency (V2)", show_header=True, header_style="bold")
+            flag_table.add_column("Flag")
+            flag_table.add_column("Count", justify="right")
+            for flag_id, count in list(flag_freq.items())[:12]:
+                flag_table.add_row(str(flag_id), str(count))
+            console.print(flag_table)
+
+        if per_session_v2:
+            session_table = Table(title="Per-Session Post-Mortems (V2)", show_header=True, header_style="bold")
+            session_table.add_column("Session ID")
+            session_table.add_column("Composite", justify="right")
+            session_table.add_column("Shape")
+            session_table.add_column("Recoverable", justify="right")
+            session_table.add_column("Flags", justify="right")
+            for row in per_session_v2[:20]:
+                session_table.add_row(
+                    str(row.get("session_id", "unknown")),
+                    f"{float((row.get('scores') or {}).get('composite', 0.0) or 0.0):.2f}",
+                    str((row.get("convergence") or {}).get("shape", "unknown")),
+                    f"${float(row.get('recoverable_cost_total_usd', 0.0) or 0.0):.2f}",
+                    str(len(row.get("flags") or [])),
+                )
+            console.print(session_table)
+    else:
+        # Legacy V1 output
+        style = _score_style(float(scores["composite"]))
+        summary_text = (
+            f"Composite Score: [bold {style}]{scores['composite']}/100[/]\n"
+            f"Grade: [bold]{scores['grade']}[/]\n"
+            f"Diagnosis: {scores['diagnosis']}"
+        )
+        console.print(Panel(summary_text, title="Prompt Quality Summary"))
+
+        score_table = Table(title="Subscores", show_header=True, header_style="bold")
+        score_table.add_column("Metric")
+        score_table.add_column("Score", justify="right")
+        for key, value in scores["subscores"].items():
+            score_table.add_row(key, f"{value:.2f}/25")
+        console.print(score_table)
 
     weighted = scores.get("weighted_breakdown") or {}
     weights = scores.get("weights") or {}
@@ -48,6 +117,15 @@ def render_cli_report(report: Dict[str, Any], console: Console | None = None) ->
         for key, contribution in weighted.items():
             weighted_table.add_row(key, f"{weights.get(key, 0):.1f}%", f"{contribution:.2f}")
         console.print(weighted_table)
+        console.print(
+            Panel(
+                "specificity: prompt concreteness (file paths/symbols/acceptance language) minus vague phrasing penalties\n"
+                "correction: rework/correction pressure (prompt/model/unknown rework + repeated constraints)\n"
+                "context_scope: context efficiency (avg/median/p90 tokens, over-40k ratio, tool/file-read churn penalties)\n"
+                "model_efficiency: overspend signals from rule violations (e.g., model overkill / correction loops)",
+                title="Category Definitions",
+            )
+        )
 
     turn_table = Table(title="Turn Metrics", show_header=True, header_style="bold")
     turn_table.add_column("Turns", justify="right")
@@ -146,10 +224,19 @@ def render_cli_report(report: Dict[str, Any], console: Console | None = None) ->
 
     largest_turn = session.get("largest_turn")
     if largest_turn:
+        who = "user" if largest_turn.get("is_user_turn") else "assistant" if largest_turn.get("is_assistant_turn") else "event"
+        flags = largest_turn.get("prompt_flags") or []
+        flags_text = f"\nPrompt flags: {', '.join(flags)}" if flags else ""
+        cost_source = largest_turn.get("cost_source") or "unknown"
         console.print(
             Panel(
-                f"Turn #{largest_turn['turn_index']} | Tokens: {largest_turn['tokens']} | "
-                f"Cost: ${largest_turn['turn_cost']:.4f} | Model: {largest_turn['model']}",
+                f"Session: {largest_turn.get('session_id','unknown')}\n"
+                f"Turn #{largest_turn.get('turn_index', 0)} ({who}) | UUID: {str(largest_turn.get('uuid',''))[:8]}\n"
+                f"Timestamp: {largest_turn.get('timestamp','unknown')}\n"
+                f"Model: {largest_turn.get('model','unknown')} | Agent: {largest_turn.get('agent_type','unknown')}/{largest_turn.get('agent_id','unknown')}\n"
+                f"Tokens (inc/eff): {largest_turn.get('tokens', 0)}/{largest_turn.get('tokens_effective', 0)} | "
+                f"Cache (r/w): {largest_turn.get('cache_read_tokens', 0)}/{largest_turn.get('cache_write_tokens', 0)}\n"
+                f"Cost: ${float(largest_turn.get('turn_cost', 0.0) or 0.0):.4f} (source={cost_source}){flags_text}",
                 title="Worst (Largest) Turn",
             )
         )
@@ -215,6 +302,9 @@ def render_cli_report(report: Dict[str, Any], console: Console | None = None) ->
             why = ", ".join(row.get("reasons") or [])
             prompt_text = str(row.get("prompt_text", "") or "").strip()
             prompt_display = (prompt_text[:200] + ("..." if len(prompt_text) > 200 else "")) if prompt_text else "<empty>"
+            synth_count = len(row.get("synthetic_user_turns_in_window") or [])
+            if synth_count:
+                why = (why + f" | synth_in_window={synth_count}").strip(" |")
             prompt_table.add_row(
                 str(row.get("timestamp", "unknown")),
                 str(row.get("prompt_uuid", ""))[:8],
@@ -241,39 +331,125 @@ def render_cli_report(report: Dict[str, Any], console: Console | None = None) ->
         for row in high_quality[:10]:
             prompt_text = str(row.get("prompt_text", "") or "").strip()
             prompt_display = (prompt_text[:200] + ("..." if len(prompt_text) > 200 else "")) if prompt_text else "<empty>"
+            synth_count = len(row.get("synthetic_user_turns_in_window") or [])
+            why = ", ".join(row.get("why") or [])
+            if synth_count:
+                why = (why + f" | synth_in_window={synth_count}").strip(" |")
             hq_table.add_row(
                 f"{float(row.get('quality_score', 0.0)):.3f}",
                 str(row.get("prompt_uuid", ""))[:8],
                 prompt_display,
                 f"${float(row.get('downstream_cost', 0.0)):.4f}",
                 str(row.get("downstream_tokens", 0)),
-                ", ".join(row.get("why") or []),
+                why,
             )
         console.print(hq_table)
 
+    excluded_user_prompts = session.get("excluded_user_prompts") or []
+    if excluded_user_prompts:
+        excluded_table = Table(title="Excluded Synthetic 'User' Prompts (Heuristic)", show_header=True, header_style="bold")
+        excluded_table.add_column("Timestamp")
+        excluded_table.add_column("UUID")
+        excluded_table.add_column("Reasons")
+        excluded_table.add_column("Trigger UUID")
+        excluded_table.add_column("Prompt")
+        for row in excluded_user_prompts[:10]:
+            excluded_table.add_row(
+                str(row.get("timestamp", "unknown")),
+                str(row.get("prompt_uuid", ""))[:8],
+                ", ".join(row.get("reasons") or []),
+                str(row.get("trigger_prompt_uuid", ""))[:8],
+                str(row.get("prompt_snippet", "") or ""),
+            )
+        console.print(excluded_table)
+
 
 def build_markdown_report(report: Dict[str, Any]) -> str:
-    scores = report["scores"]
+    v2 = report.get("v2") or {}
+    scores = (v2.get("scores") or report.get("scores") or {})
     session = report["session_features"]
     rules = report["rule_violations"]
+    turn_features = report.get("turn_features") or []
 
     lines: List[str] = []
     lines.append("# AI Coding Prompt Analysis Report")
     lines.append("")
-    lines.append("## Summary")
-    lines.append(f"- Composite score: **{scores['composite']}/100**")
-    lines.append(f"- Grade: **{scores['grade']}**")
-    lines.append(f"- Diagnosis: {scores['diagnosis']}")
-    lines.append("")
+    if v2 and isinstance(v2.get("project_rollup"), dict):
+        project_rollup = v2.get("project_rollup") or {}
+        per_session_v2 = v2.get("per_session_v2") or []
+        lines.append("## Summary (V2)")
+        lines.append(f"- Project composite score: **{project_rollup.get('composite', 0.0)}/100**")
+        lines.append(f"- Sessions analyzed: **{int(project_rollup.get('session_count', 0) or 0)}**")
+        lines.append(f"- Project cumulative recoverable cost: `${float(project_rollup.get('recoverable_cost_total_usd', 0.0) or 0.0):.2f}`")
+        lines.append("")
+
+        lines.append("## Project Dimension Scores (V2)")
+        for dim_id, value in (project_rollup.get("dimensions") or {}).items():
+            lines.append(f"- {_V2_DIMENSION_LABELS.get(dim_id, dim_id)}: {value}")
+        lines.append("")
+
+        lines.append("## Per-Session Post-Mortems (V2)")
+        if not per_session_v2:
+            lines.append("- None")
+        else:
+            for row in per_session_v2:
+                lines.append(
+                    f"- Session `{row.get('session_id','unknown')}` | composite `{float((row.get('scores') or {}).get('composite', 0.0) or 0.0):.2f}` "
+                    f"| shape `{(row.get('convergence') or {}).get('shape', 'unknown')}` | recoverable `${float(row.get('recoverable_cost_total_usd', 0.0) or 0.0):.2f}`"
+                )
+                rate = row.get("cost_rate") or {}
+                lines.append(
+                    f"  - cost rate: `{float(rate.get('usd_per_token', 0.0) or 0.0):.6f}` USD/token "
+                    f"(source={rate.get('source','unknown')}, conf={rate.get('confidence','unknown')})"
+                )
+                for dim_id, dim in (row.get("dimensions") or {}).items():
+                    lines.append(f"  - {_V2_DIMENSION_LABELS.get(dim_id, dim_id)}: {dim.get('points', 0.0)}/{dim.get('max_points', 0.0)}")
+                    for d in (dim.get("deductions") or [])[:6]:
+                        lines.append(
+                            f"    - {d.get('cause_code','')}: -{float(d.get('points', 0.0) or 0.0):.2f} "
+                            f"(flag `{d.get('flag_id','')}`)"
+                        )
+                flags = row.get("flags") or []
+                if flags:
+                    lines.append("  - flags:")
+                for f in flags:
+                    lines.append(
+                        f"    - **{f.get('flag_id','')}** ({f.get('severity','')}): {f.get('description','')} "
+                        f"(x{int(f.get('occurrences',0) or 0)}) | recoverable `${float(f.get('recoverable_cost_usd',0.0) or 0.0):.2f}`"
+                    )
+        lines.append("")
+
+        lines.append("## Project Flag Frequency (V2)")
+        flag_freq = project_rollup.get("flag_frequency") or {}
+        if not flag_freq:
+            lines.append("- None")
+        else:
+            for flag_id, count in flag_freq.items():
+                lines.append(f"- `{flag_id}`: {count}")
+        lines.append("")
+    else:
+        lines.append("## Summary")
+        lines.append(f"- Composite score: **{scores['composite']}/100**")
+        lines.append(f"- Grade: **{scores['grade']}**")
+        lines.append(f"- Diagnosis: {scores['diagnosis']}")
+        lines.append("")
 
     lines.append("## Score")
-    for key, value in scores["subscores"].items():
-        lines.append(f"- {key}: {value}/25")
+    if v2 and isinstance(v2.get("project_rollup"), dict):
+        lines.append("- (V2 report; legacy V1 subscores omitted)")
+    else:
+        for key, value in scores["subscores"].items():
+            lines.append(f"- {key}: {value}/25")
     weighted = scores.get("weighted_breakdown") or {}
     weights = scores.get("weights") or {}
     if weighted and weights:
         lines.append("")
         lines.append("### Weighted Contributions")
+        lines.append("- Category definitions:")
+        lines.append("- specificity: Prompt concreteness (file paths/symbols/acceptance language) minus vague phrasing penalties.")
+        lines.append("- correction: Rework/correction pressure (prompt/model/unknown rework + repeated constraints).")
+        lines.append("- context_scope: Context efficiency (avg/median/p90 tokens, over-40k ratio, tool/file-read churn penalties).")
+        lines.append("- model_efficiency: Overspend signals from rule violations (e.g., model overkill / correction loops).")
         for key, contribution in weighted.items():
             lines.append(f"- {key}: {contribution}/100 contribution (weight={weights.get(key, 0):.1f}%)")
     lines.append("")
@@ -334,6 +510,51 @@ def build_markdown_report(report: Dict[str, Any]) -> str:
         lines.append(f"- Estimate coverage: {est_turns}/{asst_turns} assistant turns ({coverage:.1%})")
     lines.append("")
 
+    largest_turn = session.get("largest_turn") or {}
+    if largest_turn:
+        who = "user" if largest_turn.get("is_user_turn") else "assistant" if largest_turn.get("is_assistant_turn") else "event"
+        lines.append("## Worst (Largest) Turn")
+        lines.append(f"- Session: `{largest_turn.get('session_id','unknown')}`")
+        lines.append(f"- Turn index: {largest_turn.get('turn_index', 0)} ({who})")
+        lines.append(f"- Timestamp: `{largest_turn.get('timestamp','unknown')}`")
+        lines.append(f"- UUID: `{largest_turn.get('uuid','')}`")
+        lines.append(f"- Model: `{largest_turn.get('model','unknown')}`")
+        lines.append(f"- Tokens (incremental): {largest_turn.get('tokens', 0)}")
+        lines.append(f"- Tokens (effective): {largest_turn.get('tokens_effective', 0)}")
+        lines.append(f"- Cache read/write: {largest_turn.get('cache_read_tokens', 0)}/{largest_turn.get('cache_write_tokens', 0)}")
+        lines.append(f"- Cost: ${float(largest_turn.get('turn_cost', 0.0) or 0.0):.4f} (source: `{largest_turn.get('cost_source') or 'unknown'}`)")
+        lines.append(f"- Agent: `{largest_turn.get('agent_type','unknown')}` / `{largest_turn.get('agent_id','unknown')}`")
+        if largest_turn.get("source_file"):
+            lines.append(f"- Source: `{largest_turn.get('source_file')}`")
+        flags = largest_turn.get("prompt_flags") or []
+        if flags:
+            lines.append(f"- Prompt flags: {', '.join(flags)}")
+        if float(largest_turn.get("turn_cost", 0.0) or 0.0) == 0.0 and int(largest_turn.get("tokens", 0) or 0) > 0:
+            lines.append("- Note: cost is $0.00 because this event had no reported cost and could not be derived (pricing/model/usage mismatch).")
+        lines.append("")
+
+    lines.append("## Session Lineage Overview")
+    overview = session_lineage_overview(turn_features) if turn_features else []
+    if not overview:
+        lines.append("- None")
+    else:
+        for row in overview:
+            tools = ", ".join(f"{name}={cnt}" for name, cnt in (row.get("top_tools") or []))
+            lines.append(
+                f"- session `{row['session_id']}`: turns={row['total_turns']} user={row['user_turns']} assistant={row['assistant_turns']} "
+                f"prompts(non-empty)={row['prompts_non_empty']} tool_use={row['tool_use_count']} tool_result={row['tool_result_count']} "
+                f"subagent_user={row['subagent_user_turns']} agent_meta={row['agent_generated_meta_turns']} tool_result_only={row['tool_result_only_user_turns']} "
+                f"top_tools=[{tools}]"
+            )
+    lines.append("")
+
+    # Group turns by session once for prompt drilldowns.
+    turns_by_session: Dict[str, List[Dict[str, Any]]] = {}
+    if turn_features:
+        for t in turn_features:
+            sid = str(t.get("session_id", "unknown"))
+            turns_by_session.setdefault(sid, []).append(t)
+
     lines.append("## Violations")
     if rules:
         for rule in rules:
@@ -360,8 +581,25 @@ def build_markdown_report(report: Dict[str, Any]) -> str:
             )
         lines.append("")
 
+    lines.append("## Excluded Synthetic 'User' Prompts (Heuristic)")
+    excluded = session.get("excluded_user_prompts", [])[:10]
+    if not excluded:
+        lines.append("- None")
+    else:
+        for i, p in enumerate(excluded, 1):
+            reasons = ", ".join(p.get("reasons") or [])
+            trig = str(p.get("trigger_prompt_uuid") or "")
+            trig_display = f"`{trig}`" if trig else "<none>"
+            lines.append(
+                f"- {i}. `{p.get('timestamp','unknown')}` | uuid `{p.get('prompt_uuid','')}` | reasons [{reasons or 'unknown'}] | trigger {trig_display}"
+            )
+            snippet = str(p.get("prompt_snippet") or "").strip()
+            if snippet:
+                lines.append(f"  - prompt: {snippet}")
+    lines.append("")
+
     lines.append("## Most Expensive Prompts (User Turns)")
-    prompts = session.get("most_expensive_prompts", [])
+    prompts = session.get("most_expensive_prompts", [])[:3]
     if not prompts:
         lines.append("- None")
     else:
@@ -381,6 +619,9 @@ def build_markdown_report(report: Dict[str, Any]) -> str:
                 lines.append("  - prompt: <empty>")
             if p.get("reasons"):
                 lines.append(f"  - why: {', '.join(p['reasons'])}")
+            synth = p.get("synthetic_user_turns_in_window") or []
+            if synth:
+                lines.append(f"  - synthetic user turns in window: {len(synth)}")
             suggestions = p.get("suggestions") or []
             if suggestions:
                 lines.append("  - suggestions:")
@@ -392,9 +633,20 @@ def build_markdown_report(report: Dict[str, Any]) -> str:
                 lines.append(str(p["suggested_rewrite"]))
                 lines.append("```")
 
+            # Dual lineage drilldowns (Markdown only)
+            if turn_features and p.get("prompt_uuid"):
+                prompt_uuid = str(p.get("prompt_uuid") or "")
+                session_turns = turns_by_session.get(str(p.get("session_id", "unknown")), [])
+                lines.append("  - lineage (time window):")
+                for l in time_window_lineage(session_turns, prompt_uuid, max_events=25):
+                    lines.append(f"    {l}")
+                lines.append("  - lineage (parent graph):")
+                for l in parent_graph_lineage(session_turns, prompt_uuid, max_events=25, max_depth=6):
+                    lines.append(f"    {l}")
+
     lines.append("")
     lines.append("## High Quality Prompts (Examples to Copy)")
-    hq = session.get("high_quality_prompts", [])
+    hq = session.get("high_quality_prompts", [])[:3]
     if not hq:
         lines.append("- None")
     else:
@@ -414,6 +666,19 @@ def build_markdown_report(report: Dict[str, Any]) -> str:
             why = p.get("why") or []
             if why:
                 lines.append(f"  - why: {', '.join(why)}")
+            synth = p.get("synthetic_user_turns_in_window") or []
+            if synth:
+                lines.append(f"  - synthetic user turns in window: {len(synth)}")
+
+            if turn_features and p.get("prompt_uuid"):
+                prompt_uuid = str(p.get("prompt_uuid") or "")
+                session_turns = turns_by_session.get(str(p.get("session_id", "unknown")), [])
+                lines.append("  - lineage (time window):")
+                for l in time_window_lineage(session_turns, prompt_uuid, max_events=25):
+                    lines.append(f"    {l}")
+                lines.append("  - lineage (parent graph):")
+                for l in parent_graph_lineage(session_turns, prompt_uuid, max_events=25, max_depth=6):
+                    lines.append(f"    {l}")
 
     return "\n".join(lines)
 

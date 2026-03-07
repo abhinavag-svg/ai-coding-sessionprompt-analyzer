@@ -11,6 +11,7 @@ from .dedupe import dedupe_events
 from .feature_extractor import build_feature_bundle
 from .models import CostMode
 from .parser import find_jsonl_files, load_events
+from .analyzer_v2 import analyze_v2
 from .reporter import export_markdown_report, render_cli_report
 from .rule_engine import evaluate_rules
 from .scoring import compute_scores
@@ -56,6 +57,7 @@ def _to_record(event, cost: float, cost_source: str, no_cache_cost: float | None
     payload["_tool_use_id"] = event.tool_use_id
     payload["_agent_id"] = event.agent_id
     payload["_source_file"] = event.source_file
+    payload["_line_num"] = event.line_num
     payload["_agent_type"] = "subagent" if "subagents" in Path(event.source_file).parts else "primary"
     if text_parts and "text" not in payload:
         payload["text"] = "\n".join(text_parts)
@@ -86,7 +88,15 @@ def _confidence_summary(cost_sources: Counter[str]) -> Dict[str, Any]:
     return {"level": level, "coverage": coverage}
 
 
-def _build_report(records: List[Dict[str, Any]], multi_agent: bool, dedupe_stats: Dict[str, Any], cost_sources: Counter[str], pricing_mode: str, pricing_file: str | None, config: ScoringConfig | None = None) -> Dict[str, Any]:
+def _build_report_v1(
+    records: List[Dict[str, Any]],
+    multi_agent: bool,
+    dedupe_stats: Dict[str, Any],
+    cost_sources: Counter[str],
+    pricing_mode: str,
+    pricing_file: str | None,
+    config: ScoringConfig | None = None,
+) -> Dict[str, Any]:
     cfg = config or ScoringConfig()
     features = build_feature_bundle(records, cfg)
     rules = evaluate_rules(features)
@@ -119,6 +129,118 @@ def _build_report(records: List[Dict[str, Any]], multi_agent: bool, dedupe_stats
             per_session.append(
                 {
                     "session_id": session_id,
+                    "turns": session_metrics["total_turns"],
+                    "tokens": session_metrics["total_tokens"],
+                    "cost": session_metrics["total_cost"],
+                }
+            )
+        report["per_session"] = sorted(per_session, key=lambda row: row["cost"], reverse=True)
+
+    return report
+
+
+def _build_report_v2(
+    records: List[Dict[str, Any]],
+    multi_agent: bool,
+    dedupe_stats: Dict[str, Any],
+    cost_sources: Counter[str],
+    pricing_mode: str,
+    pricing_file: str | None,
+    config: ScoringConfig | None = None,
+) -> Dict[str, Any]:
+    cfg = config or ScoringConfig()
+    features = build_feature_bundle(records, cfg)
+
+    confidence = _confidence_summary(cost_sources)
+    session_features = dict(features["session_features"])
+    session_features["dedupe_stats"] = dedupe_stats
+    session_features["cost_source_counts"] = dict(cost_sources)
+    session_features["cost_confidence"] = confidence
+    session_features["pricing_mode"] = pricing_mode
+    session_features["pricing_file"] = pricing_file or "default"
+
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in records:
+        grouped[str(row.get("sessionId", "unknown"))].append(row)
+
+    per_session_v2: List[Dict[str, Any]] = []
+    for session_id, session_records in sorted(grouped.items(), key=lambda kv: kv[0]):
+        session_bundle = build_feature_bundle(session_records, cfg)
+        session_v2 = analyze_v2(session_bundle["turn_features"], session_bundle["session_features"], cfg)
+        per_session_v2.append(
+            {
+                "session_id": session_id,
+                "session_features": session_bundle["session_features"],
+                "turn_features": session_bundle["turn_features"],
+                "scores": session_v2.scores,
+                "dimensions": session_v2.dimensions,
+                "flags": session_v2.flags,
+                "deductions": session_v2.deductions,
+                "convergence": session_v2.convergence,
+                "cost_rate": session_v2.cost_rate,
+                "recoverable_cost_total_usd": session_v2.recoverable_cost_total_usd,
+            }
+        )
+
+    if per_session_v2:
+        total_cost = sum(float((row.get("session_features") or {}).get("total_cost", 0.0) or 0.0) for row in per_session_v2)
+        dim_ids = ["specificity", "context_scope", "correction_discipline", "model_stability", "session_convergence"]
+        rolled_dimensions: Dict[str, float] = {}
+        for dim_id in dim_ids:
+            weighted_num = 0.0
+            weighted_den = 0.0
+            for row in per_session_v2:
+                cost = float((row.get("session_features") or {}).get("total_cost", 0.0) or 0.0)
+                weight = cost if cost > 0 else 1.0
+                weighted_num += float((row.get("scores") or {}).get("dimensions", {}).get(dim_id, 0.0) or 0.0) * weight
+                weighted_den += weight
+            rolled_dimensions[dim_id] = round(weighted_num / weighted_den, 2) if weighted_den > 0 else 0.0
+
+        flag_frequency: Counter[str] = Counter()
+        for row in per_session_v2:
+            for flag in (row.get("flags") or []):
+                flag_frequency[str(flag.get("flag_id") or "")] += int(flag.get("occurrences", 0) or 0)
+
+        project_rollup = {
+            "session_count": len(per_session_v2),
+            "dimensions": rolled_dimensions,
+            "composite": round(sum(rolled_dimensions.values()), 2),
+            "recoverable_cost_total_usd": round(sum(float(row.get("recoverable_cost_total_usd", 0.0) or 0.0) for row in per_session_v2), 6),
+            "flag_frequency": dict(sorted(flag_frequency.items(), key=lambda kv: (-kv[1], kv[0]))),
+            "session_efficiency_distribution": [
+                {
+                    "session_id": row["session_id"],
+                    "composite": float((row.get("scores") or {}).get("composite", 0.0) or 0.0),
+                    "cost": float((row.get("session_features") or {}).get("total_cost", 0.0) or 0.0),
+                    "shape": str((row.get("convergence") or {}).get("shape", "unknown")),
+                    "recoverable_cost_total_usd": float(row.get("recoverable_cost_total_usd", 0.0) or 0.0),
+                }
+                for row in sorted(per_session_v2, key=lambda r: float((r.get("session_features") or {}).get("total_cost", 0.0) or 0.0), reverse=True)
+            ],
+        }
+    else:
+        project_rollup = {"session_count": 0, "dimensions": {}, "composite": 0.0, "recoverable_cost_total_usd": 0.0, "flag_frequency": {}, "session_efficiency_distribution": []}
+
+    report: Dict[str, Any] = {
+        "session_features": session_features,
+        "turn_features": features["turn_features"],
+        "rule_violations": [],
+        "scores": project_rollup,
+        "v2": {
+            "scores": project_rollup,
+            "project_rollup": project_rollup,
+            "per_session_v2": per_session_v2,
+        },
+        "multi_agent": multi_agent,
+    }
+
+    if multi_agent:
+        per_session = []
+        for row in per_session_v2:
+            session_metrics = row["session_features"]
+            per_session.append(
+                {
+                    "session_id": row["session_id"],
                     "turns": session_metrics["total_turns"],
                     "tokens": session_metrics["total_tokens"],
                     "cost": session_metrics["total_cost"],
@@ -173,28 +295,14 @@ def _resolve_profile(
     }
 
 
-@app.command()
-def analyze(
+def _load_analysis_inputs(
     path: str,
-    export: Optional[Path] = typer.Option(None, "--export", help="Export markdown report to a file path."),
-    multi_session: bool = typer.Option(
-        False,
-        "--multi-session/--single-session",
-        help="Show per-session breakdown in report output.",
-    ),
-    multi_agent: bool = typer.Option(
-        False,
-        "--multi-agent",
-        hidden=True,
-        help="Deprecated alias for --multi-session.",
-    ),
-    cost_mode: CostMode = typer.Option(CostMode.AUTO, "--cost-mode", help="Cost source strategy: auto, reported-only, derived-only."),
-    billable_only: bool = typer.Option(False, "--billable-only/--all-events", help="Use billable assistant events only (hides user/progress signals)."),
-    dedupe: bool = typer.Option(True, "--dedupe/--no-dedupe", help="Enable event deduplication by request/response ids."),
-    pricing_file: Optional[Path] = typer.Option(None, "--pricing-file", help="Optional JSON file with split_per_1k and blended_per_1k pricing maps."),
-    scoring_config: Optional[Path] = typer.Option(None, "--scoring-config", help="Optional JSON file with scoring thresholds and multipliers."),
-):
-    """Recursively analyze JSONL logs with cost-aware normalization."""
+    billable_only: bool,
+    dedupe: bool,
+    pricing_file: Optional[Path],
+    scoring_config: Optional[Path],
+    cost_mode: CostMode,
+) -> Dict[str, Any]:
     root = Path(path)
     if not root.exists():
         typer.echo(f"Path not found: {root}", err=True)
@@ -249,14 +357,99 @@ def analyze(
         records.append(_to_record(event, cost=cost, cost_source=source_value, no_cache_cost=no_cache_cost))
 
     typer.echo(f"Loaded {len(records)} normalized records")
-    report = _build_report(
-        records,
-        multi_agent=multi_agent,
-        dedupe_stats=dedupe_stats,
-        cost_sources=cost_sources,
+    return {
+        "records": records,
+        "cost_sources": cost_sources,
+        "dedupe_stats": dedupe_stats,
+        "config": cfg,
+        "pricing_file": str(pricing_file) if pricing_file else None,
+    }
+
+
+@app.command()
+def analyze(
+    path: str,
+    export: Optional[Path] = typer.Option(None, "--export", help="Export markdown report to a file path."),
+    multi_session: bool = typer.Option(
+        False,
+        "--multi-session/--single-session",
+        help="Show per-session breakdown in report output.",
+    ),
+    multi_agent: bool = typer.Option(
+        False,
+        "--multi-agent",
+        hidden=True,
+        help="Deprecated alias for --multi-session.",
+    ),
+    cost_mode: CostMode = typer.Option(CostMode.AUTO, "--cost-mode", help="Cost source strategy: auto, reported-only, derived-only."),
+    billable_only: bool = typer.Option(False, "--billable-only/--all-events", help="Use billable assistant events only (hides user/progress signals)."),
+    dedupe: bool = typer.Option(True, "--dedupe/--no-dedupe", help="Enable event deduplication by request/response ids."),
+    pricing_file: Optional[Path] = typer.Option(None, "--pricing-file", help="Optional JSON file with split_per_1k and blended_per_1k pricing maps."),
+    scoring_config: Optional[Path] = typer.Option(None, "--scoring-config", help="Optional JSON file with scoring thresholds and multipliers."),
+):
+    """Run the legacy V1 analyzer."""
+    analysis = _load_analysis_inputs(
+        path=path,
+        billable_only=billable_only,
+        dedupe=dedupe,
+        pricing_file=pricing_file,
+        scoring_config=scoring_config,
+        cost_mode=cost_mode,
+    )
+    report = _build_report_v1(
+        analysis["records"],
+        multi_agent=multi_agent or multi_session,
+        dedupe_stats=analysis["dedupe_stats"],
+        cost_sources=analysis["cost_sources"],
         pricing_mode=cost_mode.value,
-        pricing_file=str(pricing_file) if pricing_file else None,
-        config=cfg,
+        pricing_file=analysis["pricing_file"],
+        config=analysis["config"],
+    )
+    render_cli_report(report)
+
+    if export:
+        export_markdown_report(report, export)
+        typer.echo(f"Markdown report exported to {export}")
+
+
+@app.command("analyze-v2")
+def analyze_v2_command(
+    path: str,
+    export: Optional[Path] = typer.Option(None, "--export", help="Export markdown report to a file path."),
+    multi_session: bool = typer.Option(
+        False,
+        "--multi-session/--single-session",
+        help="Show per-session breakdown in report output.",
+    ),
+    multi_agent: bool = typer.Option(
+        False,
+        "--multi-agent",
+        hidden=True,
+        help="Deprecated alias for --multi-session.",
+    ),
+    cost_mode: CostMode = typer.Option(CostMode.AUTO, "--cost-mode", help="Cost source strategy: auto, reported-only, derived-only."),
+    billable_only: bool = typer.Option(False, "--billable-only/--all-events", help="Use billable assistant events only (hides user/progress signals)."),
+    dedupe: bool = typer.Option(True, "--dedupe/--no-dedupe", help="Enable event deduplication by request/response ids."),
+    pricing_file: Optional[Path] = typer.Option(None, "--pricing-file", help="Optional JSON file with split_per_1k and blended_per_1k pricing maps."),
+    scoring_config: Optional[Path] = typer.Option(None, "--scoring-config", help="Optional JSON file with scoring thresholds and multipliers."),
+):
+    """Run the V2 analyzer."""
+    analysis = _load_analysis_inputs(
+        path=path,
+        billable_only=billable_only,
+        dedupe=dedupe,
+        pricing_file=pricing_file,
+        scoring_config=scoring_config,
+        cost_mode=cost_mode,
+    )
+    report = _build_report_v2(
+        analysis["records"],
+        multi_agent=multi_agent or multi_session,
+        dedupe_stats=analysis["dedupe_stats"],
+        cost_sources=analysis["cost_sources"],
+        pricing_mode=cost_mode.value,
+        pricing_file=analysis["pricing_file"],
+        config=analysis["config"],
     )
     render_cli_report(report)
 

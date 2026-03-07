@@ -64,6 +64,32 @@ class ScoringConfig:
     expensive_turn_cost_threshold: float = 0.05  # >= this = expensive turn
     expensive_turn_token_threshold: int = 40_000  # >= this = expensive turn
 
+    # V2 turn semantics
+    new_info_user_lookback_turns: int = 3
+    correction_reactive_tokens_high: int = 30
+    correction_reactive_tokens_medium: int = 60
+    correction_reactive_tokens_low: int = 100
+    correction_explicit_dominant_first_n_tokens: int = 60
+    correction_explicit_density_min_hits: int = 2
+    correction_explicit_density_max_tokens: int = 100
+
+    gate3_settlement_low_token_threshold: int = 30
+
+    # V2 recoverable cost attribution caps
+    recoverable_cost_max_turns: int = 5
+    recoverable_cost_max_usd: float = 0.50
+    recoverable_cost_floor_baseline_usd_per_token: float = 0.00001
+
+    # V2 detector calibration constants
+    prompt_duplication_min_block_chars: int = 20
+    prompt_duplication_min_block_tokens: int = 4
+    file_thrash_free_reads: int = 2
+
+    error_dump_traceback_weight: float = 1.0
+    error_dump_object_literal_weight: float = 0.7
+    error_dump_punctuation_weight: float = 0.5
+    error_dump_fire_ratio: float = 0.45
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> ScoringConfig:
         """Create config from dict, using defaults for missing keys."""
