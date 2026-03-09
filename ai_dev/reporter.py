@@ -944,6 +944,34 @@ def build_markdown_report(report: Dict[str, Any]) -> str:
         lines.append("- Reduce correction loops by stating explicit acceptance criteria and constraints up front.")
     lines.append("")
 
+    # Recommendations section (if available from LLM)
+    if recommendations:
+        project_recs = recommendations.get("project", {})
+        if project_recs.get("status") == "ready":
+            lines.append("## Project Recommendations (LLM)")
+            lines.append("")
+            lines.append("LLM-generated recommendations (LLM):")
+            lines.append("")
+            for section_label, style, items in _project_recommendation_sections(project_recs):
+                lines.append(f"### {section_label}")
+                for item in items:
+                    lines.append(f"- {item}")
+                lines.append("")
+
+        per_session_recs = recommendations.get("per_session", [])
+        if per_session_recs:
+            lines.append("## Session Recommendations (LLM)")
+            lines.append("")
+            for rec in per_session_recs:
+                session_id = rec.get("session_id", "unknown")
+                status = rec.get("status", "unavailable")
+                bullets = rec.get("bullets", [])
+                if status == "ready" and bullets:
+                    lines.append(f"### Session {session_id}")
+                    for bullet in bullets:
+                        lines.append(f"- {bullet}")
+                    lines.append("")
+
     if report.get("multi_agent") and report.get("per_session"):
         lines.append("## Multi-Agent Breakdown")
         for row in report["per_session"]:
