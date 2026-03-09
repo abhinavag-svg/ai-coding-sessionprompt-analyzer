@@ -639,8 +639,13 @@ def extract_session_features(turn_features: List[Dict[str, Any]], config: Scorin
         def clamp01(x: float) -> float:
             return max(0.0, min(1.0, x))
 
+        # Exclude expensive prompts from quality candidates to avoid overlap
+        expensive_ids = {r["prompt_uuid"] for r in most_expensive_prompts}
+
         quality_rows: List[Dict[str, Any]] = []
         for row in prompt_rows:
+            if row["prompt_uuid"] in expensive_ids:
+                continue
             spec = row["specificity_signals"]
             specificity = clamp01((spec["file_paths"] * 0.25) + (spec["symbols"] * 0.1) + (spec["acceptance_hits"] * 0.2) - (spec["vague_hits"] * 0.2))
             productive = (row["downstream_edits"] + row["downstream_writes"] + row["downstream_tests"]) > 0

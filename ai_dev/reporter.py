@@ -86,8 +86,13 @@ def _format_session_shape(shape: str) -> str:
     return _SESSION_SHAPE_LABELS.get(shape, shape)
 
 
-def _build_session_health_panel(project_rollup: Dict[str, Any], session: Dict[str, Any]) -> Panel:
+def _build_session_health_panel(report: Dict[str, Any]) -> Panel:
     """Build Session Health panel with overall score and key metrics."""
+    v2 = report.get("v2") or {}
+    project_rollup = v2.get("project_rollup") or {}
+    session = report.get("session_features") or {}
+    total_cost_derived = float(report.get("total_cost_derived", 0.0) or 0.0)
+
     composite = float(project_rollup.get("composite", 0.0) or 0.0)
     score_style = _score_style(composite)
 
@@ -99,13 +104,16 @@ def _build_session_health_panel(project_rollup: Dict[str, Any], session: Dict[st
     else:
         health_text = "Needs Attention"
 
+    recoverable = float(project_rollup.get('recoverable_cost_total_usd', 0.0) or 0.0)
+    recoverable_pct = (recoverable / total_cost_derived * 100) if total_cost_derived > 0 else 0.0
+
     panel_text = (
         f"**Overall Score:** [{score_style}]{composite:.0f} / 100[/] — {health_text}\n"
         f"**What this means:** Your sessions ran well overall. A few recurring patterns are adding avoidable cost.\n"
         f"**Sessions Analyzed:** {int(project_rollup.get('session_count', 0) or 0)}\n"
-        f"**Total Spend:** ${float(project_rollup.get('total_spend_usd', 0.0) or 0.0):.2f}\n"
-        f"**Recoverable (fixable waste):** **${float(project_rollup.get('recoverable_cost_total_usd', 0.0) or 0.0):.2f}** — "
-        f"{(float(project_rollup.get('recoverable_cost_total_usd', 0.0) or 0.0) / max(float(project_rollup.get('total_spend_usd', 0.0) or 1.0), 1.0) * 100):.0f}% of your spend could have been avoided\n"
+        f"**Total Spend:** ${total_cost_derived:.2f}\n"
+        f"**Recoverable (fixable waste):** **${recoverable:.2f}** — "
+        f"{recoverable_pct:.0f}% of your spend could have been avoided\n"
         f"**Saved by caching:** ~${float(session.get('estimated_cache_savings', 0.0) or 0.0):.2f} — caching is working well, keep it"
     )
 
@@ -286,7 +294,7 @@ def render_cli_report(report: Dict[str, Any], console: Console | None = None) ->
     per_session_v2 = v2.get("per_session_v2") or []
 
     # 1. Session Health Panel
-    console.print(_build_session_health_panel(project_rollup, session))
+    console.print(_build_session_health_panel(report))
     console.print()
 
     # 2. What to Fix Section (as CLI lines, printed as panels)
@@ -625,6 +633,7 @@ def build_markdown_report(report: Dict[str, Any]) -> str:
     session = report["session_features"]
     rules = report["rule_violations"]
     turn_features = report.get("turn_features") or []
+    total_cost_derived = float(report.get("total_cost_derived", 0.0) or 0.0)
 
     lines: List[str] = []
     lines.append("# AI Coding Session Report")
@@ -652,11 +661,10 @@ def build_markdown_report(report: Dict[str, Any]) -> str:
     lines.append(f"| **Overall Score** | {composite:.0f} / 100 — {health_text} |")
     lines.append(f"| **What this means** | Your sessions ran well overall. A few recurring patterns are adding avoidable cost. |")
     lines.append(f"| **Sessions Analyzed** | {int(project_rollup.get('session_count', 0) or 0)} |")
-    lines.append(f"| **Total Spend** | ${float(project_rollup.get('total_spend_usd', 0.0) or 0.0):.2f} |")
+    lines.append(f"| **Total Spend** | ${total_cost_derived:.2f} |")
 
-    total_spend = float(project_rollup.get('total_spend_usd', 0.0) or 1.0)
     recoverable = float(project_rollup.get('recoverable_cost_total_usd', 0.0) or 0.0)
-    recoverable_pct = (recoverable / total_spend * 100) if total_spend > 0 else 0.0
+    recoverable_pct = (recoverable / total_cost_derived * 100) if total_cost_derived > 0 else 0.0
     lines.append(f"| **Recoverable (fixable waste)** | **${recoverable:.2f}** — {recoverable_pct:.0f}% of your spend could have been avoided |")
 
     cache_savings = float(session.get('estimated_cache_savings', 0.0) or 0.0)

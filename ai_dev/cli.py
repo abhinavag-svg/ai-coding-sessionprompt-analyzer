@@ -99,6 +99,10 @@ def _build_report(
     cfg = config or ScoringConfig()
     features = build_feature_bundle(records, cfg)
 
+    # Compute total derived cost directly from records (not from scorable_turns).
+    # This ensures cost is not lost if some billing events have empty role fields.
+    total_cost_derived = sum(float(r.get("cost", 0.0) or 0.0) for r in records)
+
     confidence = _confidence_summary(cost_sources)
     session_features = dict(features["session_features"])
     session_features["dedupe_stats"] = dedupe_stats
@@ -174,6 +178,7 @@ def _build_report(
         "turn_features": features["turn_features"],
         "rule_violations": [],
         "scores": project_rollup,
+        "total_cost_derived": total_cost_derived,
         "v2": {
             "scores": project_rollup,
             "project_rollup": project_rollup,
