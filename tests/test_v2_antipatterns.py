@@ -3,7 +3,7 @@ from collections import Counter
 
 
 from ai_dev.analyzer_v2 import analyze_v2
-from ai_dev.cli import _build_report_v2
+from ai_dev.cli import _build_report
 from ai_dev.feature_extractor import build_feature_bundle
 
 
@@ -230,7 +230,7 @@ response: Response {
             {"_uuid": "u2", "type": "user", "role": "user", "timestamp": "t3", "sessionId": "s2", "model": "n/a", "tokens": 12, "tokens_effective": 12, "cost": 0.0, "tool_calls": [], "text": "Fix app/routes/other.tsx."},
             {"_uuid": "a2", "type": "assistant", "role": "assistant", "timestamp": "t4", "sessionId": "s2", "model": "m", "tokens": 120, "tokens_effective": 120, "cost": 2.0, "tool_calls": [{"type": "tool_use", "name": "Edit", "input": {"file_path": "app/routes/other.tsx"}}]},
         ]
-        report = _build_report_v2(
+        report = _build_report(
             records,
             multi_agent=True,
             dedupe_stats={"input_events": 4, "output_events": 4, "duplicates_removed": 0},

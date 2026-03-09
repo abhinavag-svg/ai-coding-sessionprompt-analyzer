@@ -76,11 +76,12 @@ Rule Engine (rule_engine.py)
     ↓
 Scoring (scoring.py)
   - compute_scores(): Generate efficiency scores (0-100)
-  - Specificity (0-25): file paths, function names, constraints
-  - Correction (0-25): score = 25 × (1 − correction_ratio)
-  - Context Scope (0-25): benchmark bands (1k-8k tokens/turn excellent)
-  - Model Efficiency (0-15): avoid overkill, penalty for retries
-  - Composite: weighted average across subscores
+  - Prompt Clarity (0-25): file paths, function names, acceptance criteria
+  - Context Efficiency (0-30): benchmark bands, repeated file reads
+  - Rework Rate (0-15): prompt-induced corrections, repeated constraints
+  - AI Consistency (0-10): model-induced corrections, unknown rework
+  - Task Completion (0-20): session arc, convergence gates
+  - Composite: weighted sum across dimensions
     ↓
 Reporter (reporter.py)
   - render_cli_report(): Rich formatted CLI output
@@ -112,8 +113,8 @@ Reporter (reporter.py)
 
 - **pyproject.toml**: Package metadata, entry point `ai-dev` command (requires `pip install -e .`)
 - **pricing.example.json**, **pricing.conservative.json**, **pricing.aggressive.json**: Pricing models for cost estimation
-- **AI-CODING-PROMPT-OPTIMIZER.md**: High-level problem statement and vision
-- **AI-coding-prompt-v1-Architecture.md**: Detailed V1 architecture design
+- **docs/specs/product-spec.md**: Public product specification
+- **docs/specs/technical-spec.md**: Detailed scoring model, anti-patterns, design decisions
 - **AI-Coding-prompt-tasklist.md**: Development roadmap with phase breakdown
 
 ## Testing
@@ -127,9 +128,19 @@ No test files exist yet. Tests should be added for:
 
 ## Design Notes
 
-### Scoring Strategy (Mar 2026 Decision)
+### Scoring Strategy (Current)
 
-Context Scope now uses **benchmark bands** for tokens per turn:
+Five dimensions, weighted for non-overlapping coverage of efficiency:
+
+| Display Name | Internal Key | Weight | What It Measures |
+|---|---|---|---|
+| Prompt Clarity | `specificity` | 25% | File paths, symbols, acceptance criteria in prompts |
+| Context Efficiency | `context_scope` | 30% | Incremental tokens/turn, repeated file reads |
+| Rework Rate | `correction_discipline` | 15% | Prompt-induced corrections, repeated constraints |
+| AI Consistency | `model_stability` | 10% | Model-induced corrections, unknown failures |
+| Task Completion | `session_convergence` | 20% | Session arc, convergence gates, correction spirals |
+
+**Context Efficiency** uses **benchmark bands** for tokens per turn:
 - Excellent: 1k–8k tokens/turn
 - Normal: 8k–20k
 - Heavy: 20k–40k
@@ -139,18 +150,7 @@ Context Scope now uses **benchmark bands** for tokens per turn:
 - Median tokens/turn target: <12k
 - P90 tokens/turn target: <30k
 
-**Composite weights** (optimized for token efficiency):
-- Specificity: 30%
-- Correction: 25%
-- Context Scope: 30%
-- Model Efficiency: 15%
-
-**Correction attribution** is split deterministically (no LLM):
-- Prompt-induced rework
-- Model-induced rework
-- Unknown rework
-
-Reports now include avg/median/P90 tokens per turn and over-40k turn ratio.
+Reports lead with actionable insights (Session Health, What to Fix) before dimension breakdowns.
 
 ### Cost Calculation
 
