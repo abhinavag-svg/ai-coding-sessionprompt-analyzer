@@ -8,7 +8,7 @@ Primary objective:
 
 - Identify and prioritize prompt/process patterns that increase unnecessary cost and correction loops.
 
-For the full V2 scoring model, anti-pattern catalog, detection logic, and design decisions see [`TECHNICAL_SPEC.md`](TECHNICAL_SPEC.md).
+For the full scoring model, anti-pattern catalog, detection logic, and design decisions see [`technical-spec.md`](technical-spec.md).
 
 ## 2. Scope
 
@@ -17,7 +17,7 @@ Included:
 - JSONL log parsing and normalization
 - Token/cost estimation with configurable pricing profiles
 - Deterministic feature extraction and rule evaluation
-- V1 and V2 report generation
+- Efficiency report generation with anti-pattern analysis
 - Optional local LLM recommendation enrichment (Ollama)
 
 Not included:
@@ -52,11 +52,13 @@ Optional:
 
 Report includes:
 
-- Session metrics (turns, tokens, cost, correction ratios)
-- Dimension scores and weighted rollups
-- Anti-pattern flags with evidence and linked deductions
-- Cost confidence and pricing mode attribution
-- V2 project rollup and per-session post-mortems
+- Session Health panel (overall score, spend, recoverable cost, cache savings)
+- What to Fix section (flags ranked by cost with remedies)
+- Dimension scores with display names and explanations
+- Session breakdown with top issues per session
+- Most expensive prompts with annotations
+- Best prompts for reference
+- Technical metrics (collapsed by default)
 
 ### Anti-Patterns Detected
 
@@ -102,17 +104,16 @@ Failure handling:
 
 Primary commands:
 
-- `ai-dev analyze`
-- `ai-dev analyze-v2`
-- `ai-dev cost-range`
+- `ai-dev analyze` — Analyze efficiency and generate report
+- `ai-dev cost-range` — Compute cost estimates across pricing profiles
 
-Recommendation-related options (V2):
+Recommendation options:
 
-- `--llm-recommendations`
-- `--llm-session-recommendations`
-- `--llm-model`
-- `--llm-endpoint`
-- `--llm-timeout-sec`
+- `--llm-recommendations` — Generate project-level recommendations
+- `--llm-session-recommendations` — Generate session-level recommendations
+- `--llm-model` — Specify Ollama model to use
+- `--llm-endpoint` — Specify Ollama endpoint URL
+- `--llm-timeout-sec` — Timeout for LLM calls
 
 ## 8. Packaging and Distribution
 

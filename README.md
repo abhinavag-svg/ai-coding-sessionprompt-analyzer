@@ -11,8 +11,7 @@ Most token cost waste comes from tool-output churn (file reads, command outputs,
 ## Project Status
 
 - Language: Python
-- Interface: CLI (`ai-dev`)
-- Analyzer modes: V1 (`analyze`) and V2 (`analyze-v2`)
+- Interface: CLI (`ai-dev analyze`)
 - Optional local recommendations: Ollama-backed
 
 ## Installation
@@ -38,13 +37,13 @@ pip install -e .
 Analyze a folder containing Claude session JSONL files:
 Typical Claude session logs are stored in `~/.claude/logs/` or `~/.claude/logs/2024-06-01/`
 ```bash
-ai-dev analyze-v2 /path/to/jsonl/root --dedupe --export report.md
+ai-dev analyze /path/to/jsonl/root --dedupe --export report.md
 ```
 
 Or without editable install:
 
 ```bash
-python -m ai_dev.cli analyze-v2 /path/to/jsonl/root --dedupe --export report.md
+python -m ai_dev.cli analyze /path/to/jsonl/root --dedupe --export report.md
 ```
 ## Sample Report
 
@@ -54,16 +53,10 @@ python -m ai_dev.cli analyze-v2 /path/to/jsonl/root --dedupe --export report.md
 
 ## Core Commands
 
-### V1 analysis
+### Analyze sessions
 
 ```bash
 ai-dev analyze <path> [--export report.md]
-```
-
-### V2 analysis (recommended)
-
-```bash
-ai-dev analyze-v2 <path> [--export report.md]
 ```
 
 ### Cost range across pricing profiles
@@ -72,18 +65,18 @@ ai-dev analyze-v2 <path> [--export report.md]
 ai-dev cost-range <path> [--conservative-file pricing.conservative.json] [--aggressive-file pricing.aggressive.json]
 ```
 
-## V2 Recommendation Flags
+## Recommendation Flags
 
 Project-level recommendations are the default recommendation scope when enabled.
 
 ```bash
-ai-dev analyze-v2 <path> --llm-recommendations
+ai-dev analyze <path> --llm-recommendations
 ```
 
 Enable session-level recommendations as an opt-in extension:
 
 ```bash
-ai-dev analyze-v2 <path> --llm-session-recommendations
+ai-dev analyze <path> --llm-session-recommendations
 ```
 
 Ollama runtime options:
@@ -137,7 +130,7 @@ Show CLI help:
 
 ```bash
 python -m ai_dev.cli --help
-python -m ai_dev.cli analyze-v2 --help
+python -m ai_dev.cli analyze --help
 ```
 
 ## Specification
