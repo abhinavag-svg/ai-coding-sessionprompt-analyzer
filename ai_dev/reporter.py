@@ -27,11 +27,41 @@ def _severity_style(sev: str) -> str:
 
 
 _V2_DIMENSION_LABELS = {
-    "specificity": "Specificity",
-    "context_scope": "Context Scope",
-    "correction_discipline": "Correction Discipline",
-    "model_stability": "Model Stability",
-    "session_convergence": "Session Convergence",
+    "specificity": "Prompt Clarity",
+    "context_scope": "Context Efficiency",
+    "correction_discipline": "Rework Rate",
+    "model_stability": "AI Consistency",
+    "session_convergence": "Task Completion",
+}
+
+_V2_DIMENSION_EXPLANATIONS = {
+    "specificity": "Did your prompts tell Claude exactly what to do?",
+    "context_scope": "Did you send the right amount of context per turn?",
+    "correction_discipline": "How often did Claude have to redo things?",
+    "model_stability": "Did the model stay reliable and focused?",
+    "session_convergence": "Did sessions reach a clear, productive end?",
+}
+
+_ANTIPATTERN_DISPLAY_NAMES = {
+    "convergence_gate1_miss": "Slow to Get Started",
+    "convergence_gate2_failure": "Work Interrupted by Corrections",
+    "convergence_gate3_inconclusive": "Session Ended Without Clear Resolution",
+    "correction_spiral": "Stuck in Back-and-Forth Loop",
+    "abandoned_session": "Session Abandoned Mid-Task",
+    "file_thrash": "Files Being Re-read Repeatedly",
+    "repeated_constraint": "Same Rule Repeated Every Turn",
+    "error_dump": "Full Error Pasted (Not Trimmed)",
+    "vague_opener": "Started Too Vague",
+    "prompt_duplication": "Prompt Sent Twice (Pipeline Bug)",
+    "scope_creep": "Task Scope Kept Expanding",
+    "constraint_missing_scaffold": "Missing Project Setup Scaffold",
+}
+
+_SESSION_SHAPE_LABELS = {
+    "Clean": "Efficient",
+    "Exploration-Heavy": "Exploratory",
+    "Correction-Heavy": "High Rework",
+    "Abandoned": "Abandoned",
 }
 
 _PROJECT_RECOMMENDATION_SECTIONS = (
@@ -51,131 +81,306 @@ def _project_recommendation_sections(project_recs: Dict[str, Any]) -> List[tuple
     return out
 
 
+def _format_session_shape(shape: str) -> str:
+    """Convert session shape to display name."""
+    return _SESSION_SHAPE_LABELS.get(shape, shape)
+
+
+def _build_session_health_panel(project_rollup: Dict[str, Any], session: Dict[str, Any]) -> Panel:
+    """Build Session Health panel with overall score and key metrics."""
+    composite = float(project_rollup.get("composite", 0.0) or 0.0)
+    score_style = _score_style(composite)
+
+    # Determine health description based on score
+    if composite >= 85:
+        health_text = "Good"
+    elif composite >= 70:
+        health_text = "Fair"
+    else:
+        health_text = "Needs Attention"
+
+    panel_text = (
+        f"**Overall Score:** [{score_style}]{composite:.0f} / 100[/] — {health_text}\n"
+        f"**What this means:** Your sessions ran well overall. A few recurring patterns are adding avoidable cost.\n"
+        f"**Sessions Analyzed:** {int(project_rollup.get('session_count', 0) or 0)}\n"
+        f"**Total Spend:** ${float(project_rollup.get('total_spend_usd', 0.0) or 0.0):.2f}\n"
+        f"**Recoverable (fixable waste):** **${float(project_rollup.get('recoverable_cost_total_usd', 0.0) or 0.0):.2f}** — "
+        f"{(float(project_rollup.get('recoverable_cost_total_usd', 0.0) or 0.0) / max(float(project_rollup.get('total_spend_usd', 0.0) or 1.0), 1.0) * 100):.0f}% of your spend could have been avoided\n"
+        f"**Saved by caching:** ~${float(session.get('estimated_cache_savings', 0.0) or 0.0):.2f} — caching is working well, keep it"
+    )
+
+    return Panel(panel_text, title="Session Health")
+
+
+def _build_what_to_fix_section(per_session_v2: List[Dict[str, Any]], project_rollup: Dict[str, Any]) -> List[str]:
+    """Build What to Fix section with flags grouped by pattern and ranked by cost."""
+    lines: List[str] = []
+    lines.append("")
+    lines.append("## What to Fix")
+    lines.append("")
+    lines.append("These are the highest-impact issues found across your sessions, ranked by cost.")
+    lines.append("")
+
+    # Aggregate flags by flag_id across all sessions
+    flag_costs: Dict[str, tuple[float, int, List[str]]] = {}  # flag_id -> (cost, count, session_ids)
+
+    for session_data in per_session_v2:
+        flags = session_data.get("flags") or []
+        session_id = session_data.get("session_id", "unknown")
+
+        for flag in flags:
+            flag_id = flag.get("flag_id", "unknown")
+            cost = float(flag.get("recoverable_cost_usd", 0.0) or 0.0)
+
+            if flag_id not in flag_costs:
+                flag_costs[flag_id] = (0.0, 0, [])
+
+            total_cost, count, session_ids = flag_costs[flag_id]
+            flag_costs[flag_id] = (total_cost + cost, count + flag.get("occurrences", 1), session_ids + [session_id])
+
+    # Sort by cost descending
+    sorted_flags = sorted(flag_costs.items(), key=lambda x: x[1][0], reverse=True)
+
+    for flag_id, (total_cost, total_count, session_ids) in sorted_flags[:10]:
+        display_name = _ANTIPATTERN_DISPLAY_NAMES.get(flag_id, flag_id)
+        unique_sessions = len(set(session_ids))
+
+        # Severity indicator (simple heuristic: cost > $5 = critical, > $1 = high)
+        if total_cost >= 5.0:
+            severity_emoji = "🔴"
+        elif total_cost >= 1.0:
+            severity_emoji = "🔴"
+        else:
+            severity_emoji = "🟡"
+
+        lines.append(f"### {severity_emoji} {display_name}")
+        lines.append(f"**Found in:** {unique_sessions} of {len(per_session_v2)} sessions · **{total_count} occurrences** · **~${total_cost:.2f} recoverable**")
+        lines.append("")
+
+        # Add generic descriptions based on flag type
+        descriptions = {
+            "prompt_duplication": "Your prompt text is duplicated inside single messages. This is almost always a tool pipeline bug — not something you're doing manually.",
+            "file_thrash": "Claude is reading the same files multiple times in a session. This signals that context is getting lost mid-session — Claude has forgotten what it already read.",
+            "convergence_gate1_miss": "Claude spent turns responding without using any tools. The task wasn't understood well enough to start.",
+            "convergence_gate2_failure": "Claude started working, then got correction turns that broke the flow before the task finished.",
+            "error_dump": "A full HTTP response with headers was pasted into a prompt. Only the error message and 2 relevant stack frames are needed — everything else adds noise and cost.",
+            "constraint_missing_scaffold": "A well-specified prompt (with file paths) still triggered a correction. This usually means a project-level setup is missing.",
+            "repeated_constraint": "The same rule or instruction was repeated in multiple separate prompts instead of being stated once in a project context.",
+        }
+
+        description = descriptions.get(flag_id, "An issue that affects prompt efficiency.")
+        lines.append(description)
+        lines.append("")
+
+        # Add fix suggestions
+        fixes = {
+            "prompt_duplication": "**Fix:** Check how messages are assembled before sending. Each user turn should contain the prompt exactly once.",
+            "file_thrash": "**Fix:** Use `CLAUDE.md` to pin key file paths and context up front. Avoid sessions that span many unrelated tasks.",
+            "convergence_gate1_miss": "**Fix:** Lead with a clear goal + file path. Example: _\"Edit `app/routes/app._index.tsx` to add X. Expected: Y.\"_",
+            "convergence_gate2_failure": "**Fix:** Instead of sending corrections mid-stream, stop and restate the full intent in a single new prompt.",
+            "error_dump": "**Fix:** Trim errors to: error message + 2 relevant stack frames. Remove HTTP headers entirely.",
+            "constraint_missing_scaffold": "**Fix:** Add a `CLAUDE.md` with project structure, key conventions, and file map. Run it once as a session opener.",
+            "repeated_constraint": "**Fix:** Move standing rules to `CLAUDE.md`. State once, not per turn.",
+        }
+
+        fix = fixes.get(flag_id, "Review the flag details to understand the issue.")
+        lines.append(fix)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    return lines
+
+
+def _build_score_breakdown_table(project_rollup: Dict[str, Any]) -> Table:
+    """Build Score Breakdown table with dimensions, scores, and explanations."""
+    table = Table(title="Score Breakdown", show_header=True, header_style="bold")
+    table.add_column("What's Being Measured")
+    table.add_column("Score", justify="right")
+    table.add_column("Health", justify="center")
+
+    for dim_id, score_value in (project_rollup.get("dimensions") or {}).items():
+        dim_label = _V2_DIMENSION_LABELS.get(dim_id, dim_id)
+        explanation = _V2_DIMENSION_EXPLANATIONS.get(dim_id, "")
+
+        # Extract max points (typically 25, 30, 15, 10, 20 per dimension)
+        max_points = 25
+        if dim_id == "context_scope":
+            max_points = 30
+        elif dim_id == "model_stability":
+            max_points = 10
+        elif dim_id == "session_convergence":
+            max_points = 20
+
+        # Determine health signal
+        if score_value >= max_points * 0.9:
+            health = "✅ Excellent"
+        elif score_value >= max_points * 0.7:
+            health = "✅ Good"
+        else:
+            health = "⚠️ Could improve"
+
+        full_text = f"**{dim_label}** — {explanation}"
+        table.add_row(full_text, f"{score_value:.0f} / {max_points}", health)
+
+    return table
+
+
+def _build_session_breakdown_table(per_session_v2: List[Dict[str, Any]]) -> Table:
+    """Build Session Breakdown table ranked by score."""
+    table = Table(title="Session Breakdown", show_header=True, header_style="bold")
+    table.add_column("Session")
+    table.add_column("Score", justify="right")
+    table.add_column("Pattern")
+    table.add_column("Top Issues")
+    table.add_column("Recoverable", justify="right")
+
+    # Sort by composite score descending
+    sorted_sessions = sorted(
+        per_session_v2,
+        key=lambda x: float((x.get("scores") or {}).get("composite", 0.0) or 0.0),
+        reverse=True
+    )
+
+    for i, session_data in enumerate(sorted_sessions[:20], 1):
+        session_id = str(session_data.get("session_id", "unknown"))[:8]
+        composite = float((session_data.get("scores") or {}).get("composite", 0.0) or 0.0)
+        shape = _format_session_shape((session_data.get("convergence") or {}).get("shape", "unknown"))
+        recoverable = float(session_data.get("recoverable_cost_total_usd", 0.0) or 0.0)
+
+        # Get top 2 flags
+        flags = session_data.get("flags") or []
+        top_flags = []
+        for f in flags[:2]:
+            flag_id = f.get("flag_id", "")
+            occurrence_count = f.get("occurrences", 1)
+            flag_display = _ANTIPATTERN_DISPLAY_NAMES.get(flag_id, flag_id)
+            if occurrence_count > 1:
+                top_flags.append(f"{flag_display} ×{occurrence_count}")
+            else:
+                top_flags.append(flag_display)
+
+        issues_text = ", ".join(top_flags) if top_flags else "None"
+
+        table.add_row(
+            f"Session {i} ({session_id})",
+            f"{composite:.0f}",
+            shape,
+            issues_text,
+            f"${recoverable:.2f}"
+        )
+
+    return table
+
+
 def render_cli_report(report: Dict[str, Any], console: Console | None = None) -> None:
     console = console or Console()
 
     v2 = report.get("v2") or {}
     recommendations = report.get("recommendations") or {}
-    scores = (v2.get("scores") or report.get("scores") or {})
     session = report["session_features"]
     rules = report["rule_violations"]
 
-    if v2 and isinstance(v2.get("project_rollup"), dict):
-        project_rollup = v2.get("project_rollup") or {}
-        per_session_v2 = v2.get("per_session_v2") or []
-        composite = float(project_rollup.get("composite", scores.get("composite", 0.0)) or 0.0)
-        style = _score_style(composite)
-        summary_text = (
-            f"Project Composite Score: [bold {style}]{composite:.2f}/100[/]\n"
-            f"Sessions: [bold]{int(project_rollup.get('session_count', 0) or 0)}[/]\n"
-            f"Cumulative recoverable cost: ${float(project_rollup.get('recoverable_cost_total_usd', 0.0) or 0.0):.2f}"
-        )
-        console.print(Panel(summary_text, title="V2 Project Summary"))
+    # V2 format is now the only format
+    project_rollup = v2.get("project_rollup") or {}
+    per_session_v2 = v2.get("per_session_v2") or []
 
-        project_recs = recommendations.get("project") or {}
-        if project_recs:
-            section_blocks = _project_recommendation_sections(project_recs)
-            if section_blocks:
-                for label, style_name, bullets in section_blocks:
-                    console.print(
-                        Panel(
-                            "\n".join(f"- {bullet}" for bullet in bullets),
-                            title=f"Project Recommendations (LLM): {label}",
-                            border_style=style_name,
-                        )
-                    )
+    # 1. Session Health Panel
+    console.print(_build_session_health_panel(project_rollup, session))
+    console.print()
+
+    # 2. What to Fix Section (as CLI lines, printed as panels)
+    # Build the structured flag data
+    flag_costs: Dict[str, tuple[float, int, List[str]]] = {}
+    for session_data in per_session_v2:
+        flags = session_data.get("flags") or []
+        session_id = session_data.get("session_id", "unknown")
+        for flag in flags:
+            flag_id = flag.get("flag_id", "unknown")
+            cost = float(flag.get("recoverable_cost_usd", 0.0) or 0.0)
+            if flag_id not in flag_costs:
+                flag_costs[flag_id] = (0.0, 0, [])
+            total_cost, count, session_ids = flag_costs[flag_id]
+            flag_costs[flag_id] = (total_cost + cost, count + flag.get("occurrences", 1), session_ids + [session_id])
+
+    sorted_flags = sorted(flag_costs.items(), key=lambda x: x[1][0], reverse=True)
+
+    if sorted_flags:
+        console.print("[bold]What to Fix[/]\n")
+        console.print("These are the highest-impact issues found across your sessions, ranked by cost.\n")
+
+        descriptions = {
+            "prompt_duplication": "Your prompt text is duplicated inside single messages. This is almost always a tool pipeline bug — not something you're doing manually.",
+            "file_thrash": "Claude is reading the same files multiple times in a session. This signals that context is getting lost mid-session — Claude has forgotten what it already read.",
+            "convergence_gate1_miss": "Claude spent turns responding without using any tools. The task wasn't understood well enough to start.",
+            "convergence_gate2_failure": "Claude started working, then got correction turns that broke the flow before the task finished.",
+            "error_dump": "A full HTTP response with headers was pasted into a prompt. Only the error message and 2 relevant stack frames are needed — everything else adds noise and cost.",
+            "constraint_missing_scaffold": "A well-specified prompt (with file paths) still triggered a correction. This usually means a project-level setup is missing.",
+            "repeated_constraint": "The same rule or instruction was repeated in multiple separate prompts instead of being stated once in a project context.",
+        }
+
+        fixes = {
+            "prompt_duplication": "Check how messages are assembled before sending. Each user turn should contain the prompt exactly once.",
+            "file_thrash": "Use `CLAUDE.md` to pin key file paths and context up front. Avoid sessions that span many unrelated tasks.",
+            "convergence_gate1_miss": "Lead with a clear goal + file path. Example: _\"Edit `app/routes/app._index.tsx` to add X. Expected: Y.\"_",
+            "convergence_gate2_failure": "Instead of sending corrections mid-stream, stop and restate the full intent in a single new prompt.",
+            "error_dump": "Trim errors to: error message + 2 relevant stack frames. Remove HTTP headers entirely.",
+            "constraint_missing_scaffold": "Add a `CLAUDE.md` with project structure, key conventions, and file map. Run it once as a session opener.",
+            "repeated_constraint": "Move standing rules to `CLAUDE.md`. State once, not per turn.",
+        }
+
+        for flag_id, (total_cost, total_count, session_ids) in sorted_flags[:10]:
+            display_name = _ANTIPATTERN_DISPLAY_NAMES.get(flag_id, flag_id)
+            unique_sessions = len(set(session_ids))
+
+            # Severity indicator
+            if total_cost >= 5.0:
+                severity_emoji = "🔴"
+            elif total_cost >= 1.0:
+                severity_emoji = "🔴"
             else:
-                bullets = list(project_recs.get("bullets") or [])
-                if bullets:
-                    console.print(Panel("\n".join(f"- {bullet}" for bullet in bullets), title="Project Recommendations (LLM)"))
-                elif project_recs.get("message"):
-                    console.print(Panel(str(project_recs.get("message")), title="Project Recommendations (LLM)"))
+                severity_emoji = "🟡"
 
-        dim_table = Table(title="Project Dimension Scores (V2)", show_header=True, header_style="bold")
-        dim_table.add_column("Dimension")
-        dim_table.add_column("Weighted Score", justify="right")
-        for dim_id, value in (project_rollup.get("dimensions") or {}).items():
-            dim_table.add_row(
-                _V2_DIMENSION_LABELS.get(dim_id, dim_id),
-                str(value),
+            description = descriptions.get(flag_id, "An issue that affects prompt efficiency.")
+            fix = fixes.get(flag_id, "Review the flag details to understand the issue.")
+
+            panel_text = (
+                f"**Found in:** {unique_sessions} of {len(per_session_v2)} sessions · "
+                f"**{total_count} occurrences** · **~${total_cost:.2f} recoverable**\n\n"
+                f"{description}\n\n"
+                f"**Fix:** {fix}"
             )
-        console.print(dim_table)
 
-        flag_freq = project_rollup.get("flag_frequency") or {}
-        if flag_freq:
-            flag_table = Table(title="Project Flag Frequency (V2)", show_header=True, header_style="bold")
-            flag_table.add_column("Flag")
-            flag_table.add_column("Count", justify="right")
-            for flag_id, count in list(flag_freq.items())[:12]:
-                flag_table.add_row(str(flag_id), str(count))
-            console.print(flag_table)
+            console.print(Panel(panel_text, title=f"{severity_emoji} {display_name}"))
+            console.print()
 
-        if per_session_v2:
-            session_table = Table(title="Per-Session Post-Mortems (V2)", show_header=True, header_style="bold")
-            session_table.add_column("Session ID")
-            session_table.add_column("Composite", justify="right")
-            session_table.add_column("Shape")
-            session_table.add_column("Recoverable", justify="right")
-            session_table.add_column("Flags", justify="right")
-            for row in per_session_v2[:20]:
-                session_table.add_row(
-                    str(row.get("session_id", "unknown")),
-                    f"{float((row.get('scores') or {}).get('composite', 0.0) or 0.0):.2f}",
-                    str((row.get("convergence") or {}).get("shape", "unknown")),
-                    f"${float(row.get('recoverable_cost_total_usd', 0.0) or 0.0):.2f}",
-                    str(len(row.get("flags") or [])),
-                )
-            console.print(session_table)
+    # 3. Score Breakdown
+    console.print(_build_score_breakdown_table(project_rollup))
+    console.print()
 
-            session_recommendations = {
-                str(item.get("session_id", "unknown")): item for item in list(recommendations.get("per_session") or [])
-            }
-            for row in per_session_v2[:20]:
-                rec = session_recommendations.get(str(row.get("session_id", "unknown"))) or {}
-                bullets = list(rec.get("bullets") or [])
-                if bullets:
-                    console.print(
-                        Panel(
-                            "\n".join(f"- {bullet}" for bullet in bullets),
-                            title=f"Session Recommendations (LLM): {row.get('session_id', 'unknown')}",
-                        )
-                    )
-    else:
-        # Legacy V1 output
-        style = _score_style(float(scores["composite"]))
-        summary_text = (
-            f"Composite Score: [bold {style}]{scores['composite']}/100[/]\n"
-            f"Grade: [bold]{scores['grade']}[/]\n"
-            f"Diagnosis: {scores['diagnosis']}"
+    # Add context note for Score Breakdown
+    context_dim = project_rollup.get("dimensions", {}).get("context_scope", 0.0)
+    if context_dim and context_dim < 25:
+        console.print("[yellow]Context Efficiency is your main drag — it's being pulled down by duplicate prompts and repeated file reads. Fix those two and this score jumps.[/]\n")
+
+    # 4. Session Breakdown
+    console.print(_build_session_breakdown_table(per_session_v2))
+    console.print()
+
+    # Call out highest priority session
+    if per_session_v2:
+        sorted_sessions = sorted(
+            per_session_v2,
+            key=lambda x: float((x.get("scores") or {}).get("composite", 0.0) or 0.0)
         )
-        console.print(Panel(summary_text, title="Prompt Quality Summary"))
+        lowest_session = sorted_sessions[0]
+        lowest_id = str(lowest_session.get("session_id", "unknown"))[:8]
+        lowest_score = float((lowest_session.get("scores") or {}).get("composite", 0.0) or 0.0)
+        lowest_recoverable = float(lowest_session.get("recoverable_cost_total_usd", 0.0) or 0.0)
 
-        score_table = Table(title="Subscores", show_header=True, header_style="bold")
-        score_table.add_column("Metric")
-        score_table.add_column("Score", justify="right")
-        for key, value in scores["subscores"].items():
-            score_table.add_row(key, f"{value:.2f}/25")
-        console.print(score_table)
-
-    weighted = scores.get("weighted_breakdown") or {}
-    weights = scores.get("weights") or {}
-    if weighted and weights:
-        weighted_table = Table(title="Weighted Contributions", show_header=True, header_style="bold")
-        weighted_table.add_column("Metric")
-        weighted_table.add_column("Weight", justify="right")
-        weighted_table.add_column("Contribution", justify="right")
-        for key, contribution in weighted.items():
-            weighted_table.add_row(key, f"{weights.get(key, 0):.1f}%", f"{contribution:.2f}")
-        console.print(weighted_table)
-        console.print(
-            Panel(
-                "specificity: prompt concreteness (file paths/symbols/acceptance language) minus vague phrasing penalties\n"
-                "correction: rework/correction pressure (prompt/model/unknown rework + repeated constraints)\n"
-                "context_scope: context efficiency (avg/median/p90 tokens, over-40k ratio, tool/file-read churn penalties)\n"
-                "model_efficiency: overspend signals from rule violations (e.g., model overkill / correction loops)",
-                title="Category Definitions",
-            )
-        )
+        console.print(f"[yellow]Session {lowest_id} is your highest priority[/] — "
+                     f"it scored {lowest_score:.0f} and has ${lowest_recoverable:.2f} recoverable, "
+                     f"mostly from high-cost flag patterns.\n")
 
     turn_table = Table(title="Turn Metrics", show_header=True, header_style="bold")
     turn_table.add_column("Turns", justify="right")
@@ -417,161 +622,241 @@ def render_cli_report(report: Dict[str, Any], console: Console | None = None) ->
 def build_markdown_report(report: Dict[str, Any]) -> str:
     v2 = report.get("v2") or {}
     recommendations = report.get("recommendations") or {}
-    scores = (v2.get("scores") or report.get("scores") or {})
     session = report["session_features"]
     rules = report["rule_violations"]
     turn_features = report.get("turn_features") or []
 
     lines: List[str] = []
-    lines.append("# AI Coding Prompt Analysis Report")
+    lines.append("# AI Coding Session Report")
     lines.append("")
-    if v2 and isinstance(v2.get("project_rollup"), dict):
-        project_rollup = v2.get("project_rollup") or {}
-        per_session_v2 = v2.get("per_session_v2") or []
-        session_recs = {
-            str(item.get("session_id", "unknown")): item for item in list(recommendations.get("per_session") or [])
-        }
-        lines.append("## Summary (V2)")
-        lines.append(f"- Project composite score: **{project_rollup.get('composite', 0.0)}/100**")
-        lines.append(f"- Sessions analyzed: **{int(project_rollup.get('session_count', 0) or 0)}**")
-        lines.append(f"- Project cumulative recoverable cost: `${float(project_rollup.get('recoverable_cost_total_usd', 0.0) or 0.0):.2f}`")
-        lines.append("")
-
-        project_recs = recommendations.get("project") or {}
-        if project_recs:
-            lines.append("## Project Recommendations (LLM)")
-            section_blocks = _project_recommendation_sections(project_recs)
-            if section_blocks:
-                for label, _, bullets in section_blocks:
-                    lines.append(f"### {label}")
-                    for bullet in bullets:
-                        lines.append(f"- {bullet}")
-                    lines.append("")
-            elif project_recs.get("bullets"):
-                for bullet in list(project_recs.get("bullets") or []):
-                    lines.append(f"- {bullet}")
-            elif project_recs.get("message"):
-                lines.append(f"- {project_recs.get('message')}")
-            lines.append("")
-
-        lines.append("## Project Dimension Scores (V2)")
-        for dim_id, value in (project_rollup.get("dimensions") or {}).items():
-            lines.append(f"- {_V2_DIMENSION_LABELS.get(dim_id, dim_id)}: {value}")
-        lines.append("")
-
-        lines.append("## Per-Session Post-Mortems (V2)")
-        if not per_session_v2:
-            lines.append("- None")
-        else:
-            for row in per_session_v2:
-                lines.append(
-                    f"- Session `{row.get('session_id','unknown')}` | composite `{float((row.get('scores') or {}).get('composite', 0.0) or 0.0):.2f}` "
-                    f"| shape `{(row.get('convergence') or {}).get('shape', 'unknown')}` | recoverable `${float(row.get('recoverable_cost_total_usd', 0.0) or 0.0):.2f}`"
-                )
-                rec = session_recs.get(str(row.get("session_id", "unknown"))) or {}
-                if rec.get("bullets"):
-                    lines.append("  - recommendations (LLM):")
-                    for bullet in list(rec.get("bullets") or []):
-                        lines.append(f"    - {bullet}")
-                elif rec.get("message") and rec.get("status") not in {"skipped", "ready"}:
-                    lines.append(f"  - recommendations (LLM): {rec.get('message')}")
-                rate = row.get("cost_rate") or {}
-                lines.append(
-                    f"  - cost rate: `{float(rate.get('usd_per_token', 0.0) or 0.0):.6f}` USD/token "
-                    f"(source={rate.get('source','unknown')}, conf={rate.get('confidence','unknown')})"
-                )
-                for dim_id, dim in (row.get("dimensions") or {}).items():
-                    lines.append(f"  - {_V2_DIMENSION_LABELS.get(dim_id, dim_id)}: {dim.get('points', 0.0)}/{dim.get('max_points', 0.0)}")
-                    for d in (dim.get("deductions") or [])[:6]:
-                        lines.append(
-                            f"    - {d.get('cause_code','')}: -{float(d.get('points', 0.0) or 0.0):.2f} "
-                            f"(flag `{d.get('flag_id','')}`)"
-                        )
-                flags = row.get("flags") or []
-                if flags:
-                    lines.append("  - flags:")
-                for f in flags:
-                    lines.append(
-                        f"    - **{f.get('flag_id','')}** ({f.get('severity','')}): {f.get('description','')} "
-                        f"(x{int(f.get('occurrences',0) or 0)}) | recoverable `${float(f.get('recoverable_cost_usd',0.0) or 0.0):.2f}`"
-                    )
-        lines.append("")
-
-        lines.append("## Project Flag Frequency (V2)")
-        flag_freq = project_rollup.get("flag_frequency") or {}
-        if not flag_freq:
-            lines.append("- None")
-        else:
-            for flag_id, count in flag_freq.items():
-                lines.append(f"- `{flag_id}`: {count}")
-        lines.append("")
-    else:
-        lines.append("## Summary")
-        lines.append(f"- Composite score: **{scores['composite']}/100**")
-        lines.append(f"- Grade: **{scores['grade']}**")
-        lines.append(f"- Diagnosis: {scores['diagnosis']}")
-        lines.append("")
-
-    lines.append("## Score")
-    if v2 and isinstance(v2.get("project_rollup"), dict):
-        lines.append("- (V2 report; legacy V1 subscores omitted)")
-    else:
-        for key, value in scores["subscores"].items():
-            lines.append(f"- {key}: {value}/25")
-    weighted = scores.get("weighted_breakdown") or {}
-    weights = scores.get("weights") or {}
-    if weighted and weights:
-        lines.append("")
-        lines.append("### Weighted Contributions")
-        lines.append("- Category definitions:")
-        lines.append("- specificity: Prompt concreteness (file paths/symbols/acceptance language) minus vague phrasing penalties.")
-        lines.append("- correction: Rework/correction pressure (prompt/model/unknown rework + repeated constraints).")
-        lines.append("- context_scope: Context efficiency (avg/median/p90 tokens, over-40k ratio, tool/file-read churn penalties).")
-        lines.append("- model_efficiency: Overspend signals from rule violations (e.g., model overkill / correction loops).")
-        for key, contribution in weighted.items():
-            lines.append(f"- {key}: {contribution}/100 contribution (weight={weights.get(key, 0):.1f}%)")
+    lines.append("---")
     lines.append("")
 
-    lines.append("## Metrics")
-    lines.append(f"- Total turns: {session['total_turns']}")
-    lines.append(f"- Total tokens (incremental): {session['total_tokens']}")
-    lines.append(f"- Total tokens (effective): {session.get('total_effective_tokens', 0)}")
-    lines.append(f"- Cache read tokens: {session.get('total_cache_read_tokens', 0)}")
-    lines.append(f"- Cache write tokens: {session.get('total_cache_write_tokens', 0)}")
-    lines.append(f"- Avg tokens/turn: {session.get('tokens_per_turn_avg', 0.0):.0f}")
-    lines.append(f"- Median tokens/turn: {session.get('tokens_per_turn_median', 0.0):.0f}")
-    lines.append(f"- P90 tokens/turn: {session.get('tokens_per_turn_p90', 0.0):.0f}")
-    lines.append(f"- Avg effective tokens/turn: {session.get('effective_tokens_per_turn_avg', 0.0):.0f}")
-    lines.append(f"- Median effective tokens/turn: {session.get('effective_tokens_per_turn_median', 0.0):.0f}")
-    lines.append(f"- P90 effective tokens/turn: {session.get('effective_tokens_per_turn_p90', 0.0):.0f}")
-    lines.append(f"- Over-40k turns ratio: {session.get('over_40k_turn_ratio', 0.0):.2%}")
-    lines.append(f"- Total cost: ${session['total_cost']:.4f}")
-    lines.append(f"- Cost per turn: ${session['cost_per_turn']:.4f}")
-    lines.append(f"- Correction ratio: {session['correction_ratio']:.2%}")
-    lines.append(f"- Prompt-induced rework: {session.get('prompt_rework_count', 0)} ({session.get('prompt_rework_ratio', 0.0):.2%})")
-    lines.append(f"- Model-induced rework: {session.get('model_rework_count', 0)} ({session.get('model_rework_ratio', 0.0):.2%})")
-    lines.append(f"- Unknown rework: {session.get('unknown_rework_count', 0)} ({session.get('unknown_rework_ratio', 0.0):.2%})")
-    if int(session.get("user_turn_count", 0)) == 0:
-        lines.append("- Correction attribution visibility: low (user turns unavailable under current filter)")
-    lines.append(f"- File explosion events: {session['file_explosion_events']}")
+    # V2 format is now the only format
+    project_rollup = v2.get("project_rollup") or {}
+    per_session_v2 = v2.get("per_session_v2") or []
+
+    # 1. Session Health
+    lines.append("## Session Health")
+    lines.append("")
+    composite = float(project_rollup.get("composite", 0.0) or 0.0)
+    if composite >= 85:
+        health_text = "Good"
+    elif composite >= 70:
+        health_text = "Fair"
+    else:
+        health_text = "Needs Attention"
+
+    lines.append(f"| | |")
+    lines.append(f"|---|---|")
+    lines.append(f"| **Overall Score** | {composite:.0f} / 100 — {health_text} |")
+    lines.append(f"| **What this means** | Your sessions ran well overall. A few recurring patterns are adding avoidable cost. |")
+    lines.append(f"| **Sessions Analyzed** | {int(project_rollup.get('session_count', 0) or 0)} |")
+    lines.append(f"| **Total Spend** | ${float(project_rollup.get('total_spend_usd', 0.0) or 0.0):.2f} |")
+
+    total_spend = float(project_rollup.get('total_spend_usd', 0.0) or 1.0)
+    recoverable = float(project_rollup.get('recoverable_cost_total_usd', 0.0) or 0.0)
+    recoverable_pct = (recoverable / total_spend * 100) if total_spend > 0 else 0.0
+    lines.append(f"| **Recoverable (fixable waste)** | **${recoverable:.2f}** — {recoverable_pct:.0f}% of your spend could have been avoided |")
+
+    cache_savings = float(session.get('estimated_cache_savings', 0.0) or 0.0)
+    lines.append(f"| **Saved by caching** | ~${cache_savings:.2f} — caching is working well, keep it |")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    # 2. What to Fix
+    lines.append("## What to Fix")
+    lines.append("")
+    lines.append("These are the highest-impact issues found across your sessions, ranked by cost.")
+    lines.append("")
+
+    # Aggregate flags by flag_id
+    flag_costs: Dict[str, tuple[float, int, List[str]]] = {}
+    for session_data in per_session_v2:
+        flags = session_data.get("flags") or []
+        session_id = session_data.get("session_id", "unknown")
+        for flag in flags:
+            flag_id = flag.get("flag_id", "unknown")
+            cost = float(flag.get("recoverable_cost_usd", 0.0) or 0.0)
+            if flag_id not in flag_costs:
+                flag_costs[flag_id] = (0.0, 0, [])
+            total_cost, count, session_ids = flag_costs[flag_id]
+            flag_costs[flag_id] = (total_cost + cost, count + flag.get("occurrences", 1), session_ids + [session_id])
+
+    sorted_flags = sorted(flag_costs.items(), key=lambda x: x[1][0], reverse=True)
+
+    descriptions = {
+        "prompt_duplication": "Your prompt text is duplicated inside single messages. This is almost always a tool pipeline bug — not something you're doing manually.",
+        "file_thrash": "Claude is reading the same files multiple times in a session. This signals that context is getting lost mid-session — Claude has forgotten what it already read.",
+        "convergence_gate1_miss": "Claude spent turns responding without using any tools. The task wasn't understood well enough to start.",
+        "convergence_gate2_failure": "Claude started working, then got correction turns that broke the flow before the task finished.",
+        "error_dump": "A full HTTP response with headers was pasted into a prompt. Only the error message and 2 relevant stack frames are needed — everything else adds noise and cost.",
+        "constraint_missing_scaffold": "A well-specified prompt (with file paths) still triggered a correction. This usually means a project-level setup is missing.",
+        "repeated_constraint": "The same rule or instruction was repeated in multiple separate prompts instead of being stated once in a project context.",
+    }
+
+    fixes = {
+        "prompt_duplication": "Check how messages are assembled before sending. Each user turn should contain the prompt exactly once.",
+        "file_thrash": "Use `CLAUDE.md` to pin key file paths and context up front. Avoid sessions that span many unrelated tasks.",
+        "convergence_gate1_miss": "Lead with a clear goal + file path. Example: _\"Edit `app/routes/app._index.tsx` to add X. Expected: Y.\"_",
+        "convergence_gate2_failure": "Instead of sending corrections mid-stream, stop and restate the full intent in a single new prompt.",
+        "error_dump": "Trim errors to: error message + 2 relevant stack frames. Remove HTTP headers entirely.",
+        "constraint_missing_scaffold": "Add a `CLAUDE.md` with project structure, key conventions, and file map. Run it once as a session opener.",
+        "repeated_constraint": "Move standing rules to `CLAUDE.md`. State once, not per turn.",
+    }
+
+    for flag_id, (total_cost, total_count, session_ids) in sorted_flags[:10]:
+        display_name = _ANTIPATTERN_DISPLAY_NAMES.get(flag_id, flag_id)
+        unique_sessions = len(set(session_ids))
+
+        # Severity emoji
+        if total_cost >= 5.0:
+            severity_emoji = "🔴"
+        elif total_cost >= 1.0:
+            severity_emoji = "🔴"
+        else:
+            severity_emoji = "🟡"
+
+        description = descriptions.get(flag_id, "An issue that affects prompt efficiency.")
+        fix = fixes.get(flag_id, "Review the flag details to understand the issue.")
+
+        lines.append(f"### {severity_emoji} {display_name}")
+        lines.append(f"**Found in:** {unique_sessions} of {len(per_session_v2)} sessions · **{total_count} occurrences** · **~${total_cost:.2f} recoverable**")
+        lines.append("")
+        lines.append(description)
+        lines.append("")
+        lines.append(f"**Fix:** {fix}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    # 3. Score Breakdown
+    lines.append("## Score Breakdown")
+    lines.append("")
+    lines.append("How your sessions scored across five dimensions. Each score reflects a different way your prompts affect cost and quality.")
+    lines.append("")
+    lines.append("| What's Being Measured | Score | Health |")
+    lines.append("|---|---|---|")
+
+    for dim_id, score_value in (project_rollup.get("dimensions") or {}).items():
+        dim_label = _V2_DIMENSION_LABELS.get(dim_id, dim_id)
+        explanation = _V2_DIMENSION_EXPLANATIONS.get(dim_id, "")
+
+        # Determine max points
+        max_points = 25
+        if dim_id == "context_scope":
+            max_points = 30
+        elif dim_id == "model_stability":
+            max_points = 10
+        elif dim_id == "session_convergence":
+            max_points = 20
+
+        # Health signal
+        if score_value >= max_points * 0.9:
+            health = "✅ Excellent"
+        elif score_value >= max_points * 0.7:
+            health = "✅ Good"
+        else:
+            health = "⚠️ Could improve"
+
+        lines.append(f"| **{dim_label}** — {explanation} | {score_value:.0f} / {max_points} | {health} |")
+
+    lines.append("")
+    context_dim = project_rollup.get("dimensions", {}).get("context_scope", 0.0)
+    if context_dim and context_dim < 25:
+        lines.append("**Context Efficiency** is your main drag — it's being pulled down by duplicate prompts and repeated file reads. Fix those two and this score jumps.")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("")
+
+    # 4. Session Breakdown
+    lines.append("## Session Breakdown")
+    lines.append("")
+    lines.append("| Session | Score | Pattern | Top Issues | Recoverable |")
+    lines.append("|---|---|---|---|---|")
+
+    sorted_sessions = sorted(
+        per_session_v2,
+        key=lambda x: float((x.get("scores") or {}).get("composite", 0.0) or 0.0),
+        reverse=True
+    )
+
+    for i, session_data in enumerate(sorted_sessions[:20], 1):
+        session_id = str(session_data.get("session_id", "unknown"))[:8]
+        composite = float((session_data.get("scores") or {}).get("composite", 0.0) or 0.0)
+        shape = _format_session_shape((session_data.get("convergence") or {}).get("shape", "unknown"))
+        recoverable = float(session_data.get("recoverable_cost_total_usd", 0.0) or 0.0)
+
+        # Get top flags
+        flags = session_data.get("flags") or []
+        top_flags = []
+        for f in flags[:2]:
+            flag_id = f.get("flag_id", "")
+            occurrence_count = f.get("occurrences", 1)
+            flag_display = _ANTIPATTERN_DISPLAY_NAMES.get(flag_id, flag_id)
+            if occurrence_count > 1:
+                top_flags.append(f"{flag_display} ×{occurrence_count}")
+            else:
+                top_flags.append(flag_display)
+
+        issues_text = ", ".join(top_flags) if top_flags else "None"
+
+        lines.append(f"| Session {i} ({session_id}) | {composite:.0f} | {shape} | {issues_text} | ${recoverable:.2f} |")
+
+    lines.append("")
+
+    if sorted_sessions:
+        lowest_session = sorted_sessions[0]
+        lowest_id = str(lowest_session.get("session_id", "unknown"))[:8]
+        lowest_score = float((lowest_session.get("scores") or {}).get("composite", 0.0) or 0.0)
+        lowest_recoverable = float(lowest_session.get("recoverable_cost_total_usd", 0.0) or 0.0)
+
+        lines.append(f"**Session {lowest_id} is your highest priority** — "
+                    f"it scored {lowest_score:.0f} and has ${lowest_recoverable:.2f} recoverable, "
+                    f"mostly from high-cost flag patterns.")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("")
+
+    # 5. Technical Details (in collapsible block)
+    lines.append("## Technical Details")
+    lines.append("")
+    lines.append("<details>")
+    lines.append("<summary>Token & cost metrics (click to expand)</summary>")
+    lines.append("")
+    lines.append("| Metric | Value |")
+    lines.append("|---|---|")
+    lines.append(f"| Total turns | {session['total_turns']} |")
+    lines.append(f"| Incremental tokens | {session['total_tokens']} |")
+    lines.append(f"| Effective tokens (with cache) | {session.get('total_effective_tokens', 0)} |")
+    lines.append(f"| Cache read tokens | {session.get('total_cache_read_tokens', 0)} |")
+    lines.append(f"| Cache write tokens | {session.get('total_cache_write_tokens', 0)} |")
+    lines.append(f"| Avg tokens/turn | {session.get('tokens_per_turn_avg', 0.0):.0f} |")
+    lines.append(f"| Median tokens/turn | {session.get('tokens_per_turn_median', 0.0):.0f} |")
+    lines.append(f"| P90 tokens/turn | {session.get('tokens_per_turn_p90', 0.0):.0f} |")
+    lines.append(f"| Effective avg/turn | {session.get('effective_tokens_per_turn_avg', 0.0):.0f} |")
+    lines.append(f"| Correction ratio | {session['correction_ratio']:.2%} |")
 
     dedupe_stats = session.get("dedupe_stats") or {}
     if dedupe_stats:
-        lines.append(f"- Dedupe input events: {dedupe_stats.get('input_events', 0)}")
-        lines.append(f"- Dedupe output events: {dedupe_stats.get('output_events', 0)}")
-        lines.append(f"- Duplicates removed: {dedupe_stats.get('duplicates_removed', 0)}")
+        lines.append(f"| Duplicates removed | {dedupe_stats.get('duplicates_removed', 0)} |")
 
-    confidence = session.get("cost_confidence") or {}
-    source_counts = session.get("cost_source_counts") or {}
-    if confidence:
-        lines.append(f"- Cost confidence: {confidence.get('level', 'unknown')}")
-    if source_counts:
-        source_text = ", ".join(f"{k}={v}" for k, v in source_counts.items())
-        lines.append(f"- Cost source counts: {source_text}")
-    if session.get("pricing_mode"):
-        lines.append(f"- Pricing mode: {session['pricing_mode']}")
-    if session.get("pricing_file"):
-        lines.append(f"- Pricing file: {session['pricing_file']}")
+    est_no_cache = float(session.get("estimated_no_cache_cost", 0.0) or 0.0)
+    est_savings = float(session.get("estimated_cache_savings", 0.0) or 0.0)
+    if est_no_cache > 0.0:
+        lines.append(f"| Estimated no-cache cost | ${est_no_cache:.2f} |")
+    if est_savings > 0.0:
+        lines.append(f"| **Cache savings** | **${est_savings:.2f}** |")
+
+    lines.append("")
+    lines.append("</details>")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append("*Report generated by AI Coding Prompt Optimizer · [docs/specs/product-spec.md](docs/specs/product-spec.md)*")
     lines.append("")
 
     lines.append("## Caching Impact (Estimate)")

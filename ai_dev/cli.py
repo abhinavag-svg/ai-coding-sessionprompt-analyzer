@@ -14,8 +14,6 @@ from .models import CostMode
 from .parser import find_jsonl_files, load_events
 from .analyzer_v2 import analyze_v2
 from .reporter import export_markdown_report, render_cli_report
-from .rule_engine import evaluate_rules
-from .scoring import compute_scores
 from .scoring_config import ScoringConfig, load_scoring_config
 
 app = typer.Typer(no_args_is_help=True)
@@ -89,58 +87,7 @@ def _confidence_summary(cost_sources: Counter[str]) -> Dict[str, Any]:
     return {"level": level, "coverage": coverage}
 
 
-def _build_report_v1(
-    records: List[Dict[str, Any]],
-    multi_agent: bool,
-    dedupe_stats: Dict[str, Any],
-    cost_sources: Counter[str],
-    pricing_mode: str,
-    pricing_file: str | None,
-    config: ScoringConfig | None = None,
-) -> Dict[str, Any]:
-    cfg = config or ScoringConfig()
-    features = build_feature_bundle(records, cfg)
-    rules = evaluate_rules(features)
-    scores = compute_scores(features, rules, cfg)
-
-    confidence = _confidence_summary(cost_sources)
-    session_features = dict(features["session_features"])
-    session_features["dedupe_stats"] = dedupe_stats
-    session_features["cost_source_counts"] = dict(cost_sources)
-    session_features["cost_confidence"] = confidence
-    session_features["pricing_mode"] = pricing_mode
-    session_features["pricing_file"] = pricing_file or "default"
-
-    report: Dict[str, Any] = {
-        "session_features": session_features,
-        "turn_features": features["turn_features"],
-        "rule_violations": rules,
-        "scores": scores,
-        "multi_agent": multi_agent,
-    }
-
-    if multi_agent:
-        grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-        for row in records:
-            grouped[str(row.get("sessionId", "unknown"))].append(row)
-
-        per_session = []
-        for session_id, session_records in grouped.items():
-            session_metrics = build_feature_bundle(session_records)["session_features"]
-            per_session.append(
-                {
-                    "session_id": session_id,
-                    "turns": session_metrics["total_turns"],
-                    "tokens": session_metrics["total_tokens"],
-                    "cost": session_metrics["total_cost"],
-                }
-            )
-        report["per_session"] = sorted(per_session, key=lambda row: row["cost"], reverse=True)
-
-    return report
-
-
-def _build_report_v2(
+def _build_report(
     records: List[Dict[str, Any]],
     multi_agent: bool,
     dedupe_stats: Dict[str, Any],
@@ -387,59 +334,13 @@ def analyze(
     dedupe: bool = typer.Option(True, "--dedupe/--no-dedupe", help="Enable event deduplication by request/response ids."),
     pricing_file: Optional[Path] = typer.Option(None, "--pricing-file", help="Optional JSON file with split_per_1k and blended_per_1k pricing maps."),
     scoring_config: Optional[Path] = typer.Option(None, "--scoring-config", help="Optional JSON file with scoring thresholds and multipliers."),
-):
-    """Run the legacy V1 analyzer."""
-    analysis = _load_analysis_inputs(
-        path=path,
-        billable_only=billable_only,
-        dedupe=dedupe,
-        pricing_file=pricing_file,
-        scoring_config=scoring_config,
-        cost_mode=cost_mode,
-    )
-    report = _build_report_v1(
-        analysis["records"],
-        multi_agent=multi_agent or multi_session,
-        dedupe_stats=analysis["dedupe_stats"],
-        cost_sources=analysis["cost_sources"],
-        pricing_mode=cost_mode.value,
-        pricing_file=analysis["pricing_file"],
-        config=analysis["config"],
-    )
-    render_cli_report(report)
-
-    if export:
-        export_markdown_report(report, export)
-        typer.echo(f"Markdown report exported to {export}")
-
-
-@app.command("analyze-v2")
-def analyze_v2_command(
-    path: str,
-    export: Optional[Path] = typer.Option(None, "--export", help="Export markdown report to a file path."),
-    multi_session: bool = typer.Option(
-        False,
-        "--multi-session/--single-session",
-        help="Show per-session breakdown in report output.",
-    ),
-    multi_agent: bool = typer.Option(
-        False,
-        "--multi-agent",
-        hidden=True,
-        help="Deprecated alias for --multi-session.",
-    ),
-    cost_mode: CostMode = typer.Option(CostMode.AUTO, "--cost-mode", help="Cost source strategy: auto, reported-only, derived-only."),
-    billable_only: bool = typer.Option(False, "--billable-only/--all-events", help="Use billable assistant events only (hides user/progress signals)."),
-    dedupe: bool = typer.Option(True, "--dedupe/--no-dedupe", help="Enable event deduplication by request/response ids."),
-    pricing_file: Optional[Path] = typer.Option(None, "--pricing-file", help="Optional JSON file with split_per_1k and blended_per_1k pricing maps."),
-    scoring_config: Optional[Path] = typer.Option(None, "--scoring-config", help="Optional JSON file with scoring thresholds and multipliers."),
     llm_recommendations: bool = typer.Option(False, "--llm-recommendations", help="Generate project-level recommendations with a local Ollama model."),
     llm_session_recommendations: bool = typer.Option(False, "--llm-session-recommendations", help="Also generate per-session recommendations. Implies --llm-recommendations."),
     llm_model: str = typer.Option("llama3.2:3b", "--llm-model", help="Ollama model to use for report recommendations."),
     llm_endpoint: str = typer.Option("http://localhost:11434", "--llm-endpoint", help="Ollama HTTP endpoint."),
     llm_timeout_sec: float = typer.Option(30.0, "--llm-timeout-sec", help="Timeout in seconds for Ollama availability and generation calls."),
 ):
-    """Run the V2 analyzer."""
+    """Analyze AI coding sessions to measure and optimize prompt efficiency."""
     analysis = _load_analysis_inputs(
         path=path,
         billable_only=billable_only,
@@ -448,7 +349,7 @@ def analyze_v2_command(
         scoring_config=scoring_config,
         cost_mode=cost_mode,
     )
-    report = _build_report_v2(
+    report = _build_report(
         analysis["records"],
         multi_agent=multi_agent or multi_session,
         dedupe_stats=analysis["dedupe_stats"],
