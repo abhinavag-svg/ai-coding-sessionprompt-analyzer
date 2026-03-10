@@ -31,9 +31,12 @@ def compute_v2_scores(
     convergence: Dict[str, Any],
     cost_rate: Dict[str, Any],
     config: ScoringConfig | None = None,
+    recoverable_cost_total_usd: float = 0.0,
+    total_cost_usd: float = 0.0,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Dict[str, Any]]:
     """
     V2 scoring is deduction-driven: every point loss is traceable to an anti-pattern flag (cause_code).
+    Optional: apply cost-weight penalty if recoverable_cost and total_cost are provided.
     """
     _ = config or ScoringConfig()
 
@@ -80,6 +83,13 @@ def compute_v2_scores(
         }
 
     composite = sum(dim_points.values())
+
+    # Apply cost-weight penalty if recoverable cost data available
+    if total_cost_usd > 0.0 and recoverable_cost_total_usd > 0.0:
+        recoverable_pct = (recoverable_cost_total_usd / total_cost_usd) * 100.0
+        cost_penalty = min(15.0, recoverable_pct * 0.40)
+        composite -= cost_penalty
+
     composite = _clamp(composite, 0.0, 100.0)
 
     scores_out = {

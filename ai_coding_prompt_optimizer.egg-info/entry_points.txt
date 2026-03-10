@@ -1,0 +1,2 @@
+[console_scripts]
+ai-dev = ai_dev.cli:app
