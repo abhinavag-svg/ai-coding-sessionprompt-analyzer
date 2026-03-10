@@ -53,8 +53,6 @@ class ScoringConfig:
     file_path_bonus_max: float = 8.0
     function_bonus_multiplier: float = 0.2
     function_bonus_max: float = 7.0
-    constraint_bonus_multiplier: float = 1.5
-    constraint_bonus_max: float = 7.0
     vague_penalty_multiplier: float = 20.0
     vague_penalty_max: float = 10.0
     specificity_base_score: float = 8.0

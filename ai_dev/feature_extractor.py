@@ -48,6 +48,16 @@ PROMPT_INDUCED_REWORK_PHRASES = (
     "do not change",
     "only change",
     "missing requirement",
+    "use x instead",
+    "wrong framework",
+    "wrong component",
+    "wrong library",
+    "switch to",
+    "replace with",
+    "that's not what i",
+    "not what i wanted",
+    "don't use",
+    "that's the wrong",
 )
 
 MODEL_INDUCED_REWORK_PHRASES = (
@@ -445,9 +455,17 @@ def extract_session_features(turn_features: List[Dict[str, Any]], config: Scorin
     no_cache_estimated_turns = sum(1 for t in assistant_turns if float(t.get("no_cache_cost", 0.0)) > 0.0)
     correction_turns = [t for t in user_turns if t["correction_language"]]
     correction_ratio = (len(correction_turns) / len(user_turns)) if user_turns else 0.0
-    prompt_rework_turns = [t for t in user_turns if t.get("rework_class") == "prompt"]
-    model_rework_turns = [t for t in user_turns if t.get("rework_class") == "model"]
-    unknown_rework_turns = [t for t in user_turns if t.get("rework_class") == "unknown"]
+
+    # V2: Wire correction detection from turn bundles (is_correction + attribution from reasons)
+    # Fallback to legacy rework_class for backwards compatibility
+    v2_prompt_rework_turns = [t for t in user_turns if t.get("v2_correction", {}).get("is_correction") and "prompt" in str(t.get("v2_correction", {}).get("reasons", []))]
+    v2_model_rework_turns = [t for t in user_turns if t.get("v2_correction", {}).get("is_correction") and "model" in str(t.get("v2_correction", {}).get("reasons", []))]
+    v2_unknown_rework_turns = [t for t in user_turns if t.get("v2_correction", {}).get("is_correction") and "unknown" in str(t.get("v2_correction", {}).get("reasons", []))]
+
+    # Legacy rework class detection (for backwards compatibility)
+    prompt_rework_turns = v2_prompt_rework_turns if v2_prompt_rework_turns else [t for t in user_turns if t.get("rework_class") == "prompt"]
+    model_rework_turns = v2_model_rework_turns if v2_model_rework_turns else [t for t in user_turns if t.get("rework_class") == "model"]
+    unknown_rework_turns = v2_unknown_rework_turns if v2_unknown_rework_turns else [t for t in user_turns if t.get("rework_class") == "unknown"]
 
     repeated_counter = Counter(
         t["text"].strip().lower() for t in user_turns if t["text"].strip()

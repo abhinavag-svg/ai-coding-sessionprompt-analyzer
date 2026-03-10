@@ -327,6 +327,7 @@ def _load_analysis_inputs(
 def analyze(
     path: str,
     export: Optional[Path] = typer.Option(None, "--export", help="Export markdown report to a file path."),
+    insights_html: Optional[Path] = typer.Option(None, "--insights-html", help="Path to Claude Code Insights HTML report to inject token economics section into."),
     multi_session: bool = typer.Option(
         False,
         "--multi-session/--single-session",
@@ -382,6 +383,11 @@ def analyze(
     if export:
         export_markdown_report(report, export)
         typer.echo(f"Markdown report exported to {export}")
+
+    if insights_html:
+        from .reporter import inject_into_insights_html
+        inject_into_insights_html(report, insights_html)
+        typer.echo(f"Token economics injected into Insights HTML at {insights_html}")
 
 
 @app.command("cost-range")

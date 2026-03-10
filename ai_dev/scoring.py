@@ -22,10 +22,9 @@ def compute_specificity_score(features: Dict[str, Any], config: ScoringConfig | 
 
     file_path_bonus = min(cfg.file_path_bonus_max, session["file_path_mentions"] * cfg.file_path_bonus_multiplier)
     function_bonus = min(cfg.function_bonus_max, session["function_mentions"] * cfg.function_bonus_multiplier)
-    constraint_bonus = min(cfg.constraint_bonus_max, session["repeated_phrase_count"] * cfg.constraint_bonus_multiplier)
     vague_penalty = min(cfg.vague_penalty_max, session["vague_turn_ratio"] * cfg.vague_penalty_multiplier)
 
-    raw = cfg.specificity_base_score + file_path_bonus + function_bonus + constraint_bonus - vague_penalty
+    raw = cfg.specificity_base_score + file_path_bonus + function_bonus - vague_penalty
     return _clamp(raw)
 
 
