@@ -31,7 +31,7 @@ python -m ai_dev.cli --help
 
 ```bash
 # Analyze JSONL session logs (recursive under path)
-python -m ai_dev.cli analyze <path> [--export report.md]
+python -m ai_dev.cli analyze <path> [--export report.md] [--insights-html path/to/report.html]
 
 # Options for analyze:
 #   --multi-session       Show per-session breakdown
@@ -39,6 +39,8 @@ python -m ai_dev.cli analyze <path> [--export report.md]
 #   --billable-only/--all-events
 #   --dedupe/--no-dedupe  Enable event deduplication
 #   --pricing-file        Custom pricing JSON
+#   --insights-html       Path to Claude Code Insights HTML to inject token economics into
+#   --refresh-insights    Run 'claude -p /insights' to regenerate the Insights HTML before injecting (requires credits)
 
 # Compute min/default/max cost ranges across pricing profiles
 python -m ai_dev.cli cost-range <path> [--conservative-file file.json] [--aggressive-file file.json]
@@ -105,7 +107,7 @@ Reporter (reporter.py)
 | **feature_extractor.py** | Compute turn and session metrics (corrections, file reads, vague phrases, etc.) |
 | **rule_engine.py** | Deterministic rule evaluation (no LLM needed) |
 | **scoring.py** | Efficiency score calculation with weighted subscores |
-| **reporter.py** | CLI and markdown report generation |
+| **reporter.py** | CLI, markdown report generation, and Claude Code Insights HTML injection |
 | **dedupe.py** | Event deduplication by request/response IDs |
 | **constants.py** | Scoring thresholds, benchmark bands |
 
@@ -119,12 +121,20 @@ Reporter (reporter.py)
 
 ## Testing
 
-No test files exist yet. Tests should be added for:
-- Event parsing (edge cases: malformed JSON, missing fields)
-- Cost calculation (split vs. blended, cache tokens)
-- Feature extraction (regex patterns for file paths, vague phrases)
-- Rule engine logic
-- Scoring formulas
+**47 unit tests** (32 core + 15 new integration tests) covering:
+- Anti-pattern flag detection (all 12 flags with boundary conditions)
+- Session grouping and multi-agent auto-detection
+- Per-session rollup generation
+- Threshold-based rule logic (IDE context exclusion, etc.)
+- V2 correction detection logic
+- HTML insights injection (CLI integration, CSS rendering)
+
+Run tests:
+```bash
+python -m pytest tests/ -v
+```
+
+All tests pass on main branch after scoring recalibration (PR #2) and HTML injection feature (latest).
 
 ## Design Notes
 
@@ -183,6 +193,20 @@ python -m ai_dev.cli analyze ~/.claude/projects/my-project --export report.md
 python -m ai_dev.cli cost-range ~/.claude/projects/my-project
 ```
 
+### Inject Token Economics into Claude Code Insights Report
+```bash
+# Option 1: Inject into existing Insights report (no credits needed)
+python -m ai_dev.cli analyze ~/.claude/projects --insights-html ~/.claude/usage-data/report.html
+
+# Option 2: Regenerate Insights report and inject (from terminal outside Claude Code)
+python -m ai_dev.cli analyze ~/.claude/projects --refresh-insights
+```
+
+The injection adds:
+- Token economics (cost, recoverable %) for each project area in "What You Work On"
+- Session Efficiency table showing top sessions with sample prompts
+- Anti-pattern insights woven into "Where Things Go Wrong" section
+
 ### Debug Event Parsing
 Check `parser.py:iter_normalized_events()` for how JSONL lines are normalized. Key extraction points:
 - `session_id` from payload or message
@@ -190,17 +214,35 @@ Check `parser.py:iter_normalized_events()` for how JSONL lines are normalized. K
 - Token buckets: input, output, cache_write (creation), cache_read
 - `is_billable`: only terminal events with valid request/message IDs
 
-### Add a New Scoring Rule
+### Add a New Anti-Pattern Flag (V2 Scoring)
 
-1. Add rule logic to `rule_engine.py:evaluate_rules()`
-2. Return dict with `rule_id`, `severity`, `description`, `impact_estimate`
-3. Update scoring weights in `scoring.py:compute_scores()` if needed
-4. Test rule with sample session data
+1. Define flag in `v2_antipatterns.py:detect_antipatterns_v2()`
+2. Populate flag dict:
+   - `flag_id`: Unique identifier
+   - `severity`: "high" | "medium" | "low"
+   - `total_deduction_points`: Severity-scaled points (0-100 scale)
+   - `allocations[]`: List of dimension allocations (dimension, share, cause_code)
+   - `recoverable_cost_usd`: Dollar amount of avoidable waste
+3. Consider threshold adjustments for orchestrated sessions (is_orchestrated parameter)
+4. Add test case to `tests/test_v2_antipatterns.py` covering boundary conditions
+5. Verify all 32 tests pass: `python -m pytest tests/ -v`
+
+See [memory/project-context.md](../.claude/projects/-Users-abhinav-projects-git-ai-coding-sessionprompt-analyzer/memory/project-context.md) for detailed architecture and [memory/discussion-watchpoints.md](../.claude/projects/-Users-abhinav-projects-git-ai-coding-sessionprompt-analyzer/memory/discussion-watchpoints.md) for operational patterns.
+
+## Completed Work (Mar 2026)
+
+✅ **PR #1**: Report redesign + cost display fix + prompt dedup + LLM recommendations
+✅ **PR #2**: Scoring recalibration (multi-agent auto-detection, threshold tuning, cost-weight penalty)
+✅ **Follow-up**: V2 correction detection fix + insights HTML injection (`--insights-html` flag)
+✅ **Documentation unification**: Removed all V1/V2 version references; single `analyze` command on V2 scoring path
+✅ **47 unit tests**: All passing (32 core + 15 new integration tests)
+✅ **Insights refresh automation**: Added `--refresh-insights` flag to auto-invoke `claude -p /insights` before injection
 
 ## Future Work
 
-- **Phase 6**: Compare command (not yet implemented)
+- **Phase 6**: Compare command (placeholder exists in cli.py)
 - **Phase 7**: Trend mode (accept folder, aggregate sessions, moving average)
 - **ML Layer**: Beyond deterministic rules (not yet started)
 - **Dashboard**: localhost:3001 (referenced in docs but not implemented)
 - **Proxy Layer**: HTTPS proxy for real-time interception (referenced in docs but not implemented)
+- **Extended anti-patterns**: Additional flags for emerging efficiency issues

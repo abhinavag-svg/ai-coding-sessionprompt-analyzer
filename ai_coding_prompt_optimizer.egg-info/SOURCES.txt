@@ -27,6 +27,8 @@ ai_dev/v2_antipatterns.py
 ai_dev/v2_convergence.py
 ai_dev/v2_cost_rate.py
 ai_dev/v2_scoring.py
+tests/test_fixes.py
+tests/test_insights_injection.py
 tests/test_lineage.py
 tests/test_llm_recommendations.py
 tests/test_parser_and_dedupe.py

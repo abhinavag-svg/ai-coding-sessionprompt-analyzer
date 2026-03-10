@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from rich.console import Console
 from rich.table import Table
@@ -1087,12 +1087,13 @@ def export_markdown_report(report: Dict[str, Any], out_path: str | Path) -> None
     output_path.write_text(build_markdown_report(report), encoding="utf-8")
 
 
-def inject_into_insights_html(report: Dict[str, Any], html_path: Path) -> None:
+def inject_into_insights_html(report: Dict[str, Any], html_path: Path, sessions_scan_path: Optional[Path] = None) -> None:
     """Inject ai-dev token economics section into Claude Code Insights HTML report.
 
     Args:
         report: The ai-dev report dict
         html_path: Path to the Insights HTML file to modify (in place)
+        sessions_scan_path: Optional path to scan for session JSONL files (for sample prompts)
     """
     # Read the HTML file
     if not html_path.exists():
@@ -1132,26 +1133,233 @@ def inject_into_insights_html(report: Dict[str, Any], html_path: Path) -> None:
     efficiency_dist = project_rollup.get("session_efficiency_distribution", [])
     top_sessions = efficiency_dist[:10]
 
-    # Build HTML section
-    html_section = _build_insights_injection_html(
-        composite_score,
-        total_cost,
-        recoverable_cost,
-        recoverable_pct,
-        cache_savings,
-        sorted_flags,
-        top_sessions,
-        per_session_v2,
+    # 1. Inject token economics stats into the stats-row (after Msgs/Day)
+    stats_inject = f'      <div class="stat"><div class="stat-value">${total_cost:.2f}</div><div class="stat-label">Total Spend</div></div>\n      <div class="stat"><div class="stat-value">${recoverable_cost:.2f}</div><div class="stat-label">Recoverable</div></div>\n      <div class="stat"><div class="stat-value">{composite_score:.0f}/100</div><div class="stat-label">Efficiency</div></div>'
+    import re
+    # Match the Msgs/Day stat and inject after it
+    stats_pattern = r'(<div class="stat"><div class="stat-value">[\d.]+</div><div class="stat-label">Msgs/Day</div></div>)'
+    html_content = re.sub(
+        stats_pattern,
+        rf'\1\n{stats_inject}',
+        html_content,
+        count=1
     )
 
-    # Find </body> and insert before it
-    if "</body>" not in html_content:
-        raise ValueError("Could not find </body> tag in Insights HTML file")
+    # 2. Inject project area costs (Section 2)
+    html_content = _inject_project_area_costs(html_content, per_session_v2)
 
-    modified_html = html_content.replace("</body>", html_section + "\n</body>")
+    # 3. Inject session efficiency table with sample prompts (Section 4)
+    if sessions_scan_path:
+        html_content = _inject_session_efficiency_table(html_content, top_sessions, per_session_v2, sessions_scan_path)
+
+    # 4. Inject costs into friction categories (anti-patterns section)
+    html_content = _inject_antipattern_costs(html_content, sorted_flags)
+
+    # 5. Delete the fun-ending section
+    html_content = re.sub(
+        r'\s*<div class="fun-ending">.*?</div>\s*',
+        '',
+        html_content,
+        flags=re.DOTALL
+    )
 
     # Write back
-    html_path.write_text(modified_html, encoding="utf-8")
+    html_path.write_text(html_content, encoding="utf-8")
+
+
+def _inject_project_area_costs(html_content: str, per_session_v2: List[Dict[str, Any]]) -> str:
+    """Inject exact project area costs into the 'What You Work On' section."""
+    import re
+    from html import unescape
+
+    # Build folder -> (cost, recoverable) mapping
+    folder_costs: Dict[str, tuple[float, float]] = {}
+    for session in per_session_v2:
+        folder = session.get("project_folder", "")
+        if folder:
+            total_cost = float((session.get("session_features") or {}).get("total_cost", 0.0) or 0.0)
+            recoverable = float(session.get("recoverable_cost_total_usd", 0.0) or 0.0)
+            if folder not in folder_costs:
+                folder_costs[folder] = (0.0, 0.0)
+            c, r = folder_costs[folder]
+            folder_costs[folder] = (c + total_cost, r + recoverable)
+
+    if not folder_costs:
+        return html_content
+
+    # Find all area-header blocks and inject costs where we can find a match
+    area_header_pattern = r'<div class="area-header">(.*?)</div>'
+
+    def replace_area_header(match):
+        header_content = match.group(1)
+        # Extract the area name from this block (HTML entities included)
+        area_name_match = re.search(r'<span class="area-name">([^<]+)</span>', header_content)
+        if not area_name_match:
+            return match.group(0)
+
+        html_area_name = area_name_match.group(1)
+        plain_area_name = unescape(html_area_name).lower()
+
+        # Find best-matching folder by word overlap (case-insensitive)
+        best_folder = None
+        best_score = 0
+        area_words = set(plain_area_name.split())
+
+        for folder in folder_costs.keys():
+            # Normalize folder name: split on both - and _ to get individual words
+            folder_normalized = folder.lower().replace("-", " ").replace("_", " ")
+            folder_words = set(folder_normalized.split())
+            # Check for word overlap
+            overlap = len(area_words & folder_words)
+            if overlap > best_score:
+                best_score = overlap
+                best_folder = folder
+
+        # Inject if we found any match (even 1 word overlap is better than none)
+        if best_folder and folder_costs[best_folder][0] > 0:
+            cost, recoverable = folder_costs[best_folder]
+            cost_badge = f'\n          <span style="font-size:12px; color:#10b981; background:#f0fdf4; padding:2px 8px; border-radius:4px; margin-left:8px;">${cost:.2f} · ${recoverable:.2f} recoverable</span>'
+
+            # Insert after the area-count closing span
+            new_content = re.sub(
+                r'(<span class="area-count">[^<]+</span>)',
+                rf'\1{cost_badge}',
+                header_content,
+                count=1
+            )
+            return f'<div class="area-header">{new_content}</div>'
+
+        return match.group(0)
+
+    html_content = re.sub(area_header_pattern, replace_area_header, html_content, flags=re.DOTALL)
+    return html_content
+
+
+def _find_first_user_prompt(session_id: str, scan_path: Path) -> str:
+    """Find and return the first user message from a session's JSONL file."""
+    import json
+
+    # Search for the session JSONL file
+    for jsonl_file in scan_path.glob(f"**/{session_id}.jsonl"):
+        try:
+            with open(jsonl_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        event = json.loads(line)
+                        # Look for a user message that's not a tool result
+                        message = event.get("message") or {}
+                        if message.get("role") == "user":
+                            content = message.get("content", "")
+                            # Handle both string and list content
+                            if isinstance(content, list):
+                                content = " ".join(str(c) if isinstance(c, dict) else c for c in content if c)
+                            if isinstance(content, str) and content and not content.startswith("<tool_result"):
+                                # Return first 100 chars
+                                return content[:100].replace("\n", " ").replace("  ", " ").strip()
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+        except (IOError, OSError):
+            continue
+
+    return ""
+
+
+def _inject_session_efficiency_table(html_content: str, top_sessions: List[Dict[str, Any]], per_session_v2: List[Dict[str, Any]], scan_path: Path) -> str:
+    """Inject session efficiency table with sample prompts."""
+    import re
+
+    if not top_sessions:
+        return html_content
+
+    # Build session ID -> full data mapping
+    session_map = {s["session_id"]: s for s in per_session_v2}
+
+    # Build table rows
+    rows = []
+    for session_data in top_sessions[:10]:
+        session_id = session_data.get("session_id", "")
+        score = float(session_data.get("composite", 0.0) or 0.0)
+        shape = session_data.get("shape", "unknown")
+        cost = float(session_data.get("cost", 0.0) or 0.0)
+        recoverable = float(session_data.get("recoverable_cost_total_usd", 0.0) or 0.0)
+
+        # Get sample prompt
+        sample_prompt = _find_first_user_prompt(session_id, scan_path) if scan_path else ""
+
+        # Find top issue for this session
+        top_issue = ""
+        full_session = session_map.get(session_id, {})
+        flags = full_session.get("flags") or []
+        if flags:
+            top_flag_id = flags[0].get("flag_id", "")
+            top_issue = _ANTIPATTERN_DISPLAY_NAMES.get(top_flag_id, top_flag_id)[:30]
+
+        score_color = "green" if score >= 85 else ("orange" if score >= 70 else "red")
+
+        rows.append(f'      <tr style="border-bottom:1px solid #e2e8f0;">'
+                   f'\n        <td style="padding:8px; font-family:monospace; font-size:0.875em;">{session_id[:16]}</td>'
+                   f'\n        <td style="padding:8px; text-align:center; color:{score_color};">{score:.0f}</td>'
+                   f'\n        <td style="padding:8px; text-transform:capitalize;">{shape}</td>'
+                   f'\n        <td style="padding:8px; text-align:right;">${cost:.2f}</td>'
+                   f'\n        <td style="padding:8px; text-align:right;">${recoverable:.2f}</td>'
+                   f'\n        <td style="padding:8px; font-size:0.85em; color:#64748b;">{sample_prompt}</td>'
+                   f'\n      </tr>')
+
+    table_html = (
+        '\n    <h2 style="margin-top:32px;">Session Efficiency '
+        '<span style="font-size:13px;color:#64748b;font-weight:400">(via ai-dev · top sessions by cost)</span></h2>'
+        '\n    <div style="overflow-x:auto;margin-bottom:32px;">'
+        '\n      <table style="width:100%;border-collapse:collapse;font-size:0.875em;">'
+        '\n        <thead><tr style="border-bottom:2px solid #e2e8f0;text-align:left;">'
+        '\n          <th style="padding:8px;">Session</th>'
+        '\n          <th style="padding:8px;text-align:center;">Score</th>'
+        '\n          <th style="padding:8px;">Shape</th>'
+        '\n          <th style="padding:8px;text-align:right;">Cost</th>'
+        '\n          <th style="padding:8px;text-align:right;">Recoverable</th>'
+        '\n          <th style="padding:8px;">Sample Prompt</th>'
+        '\n        </tr></thead>'
+        '\n        <tbody>'
+        + '\n'.join(rows) +
+        '\n        </tbody>'
+        '\n      </table>'
+        '\n    </div>'
+    )
+
+    # Inject after the project-areas closing div
+    pattern = r'(</div>\s*\n\s*\n\s*<div class="charts-row">)'
+    html_content = re.sub(pattern, rf'{table_html}\n    \1', html_content, count=1)
+
+    return html_content
+
+
+def _inject_antipattern_costs(html_content: str, sorted_flags: List[tuple[str, tuple[float, int]]]) -> str:
+    """Inject anti-pattern costs into the friction categories section."""
+    if not sorted_flags:
+        return html_content
+
+    # Build anti-pattern cost items to inject after the first friction-categories div in the friction section
+    antipattern_html = '\n    <h3 style="margin-top: 32px; margin-bottom: 16px;">Token Cost by Anti-Pattern (via ai-dev)</h3>\n    <div class="friction-categories">'
+    for flag_id, (cost, count) in sorted_flags:
+        display_name = _ANTIPATTERN_DISPLAY_NAMES.get(flag_id, flag_id)
+        antipattern_html += f'\n      <div class="friction-category">\n        <div class="friction-title">{display_name}</div>\n        <div class="friction-desc">{count} occurrences • ${cost:.2f} recoverable</div>\n      </div>'
+    antipattern_html += '\n    </div>'
+
+    # Find the FIRST occurrence of the friction section and inject only there
+    # Look for the section after "Where Things Go Wrong"
+    friction_start = html_content.find('<h2 id="section-friction">Where Things Go Wrong</h2>')
+    if friction_start != -1:
+        # Find the first friction-categories closing div after the section header
+        search_from = html_content.find('</div>\n    \n\n    <div class="charts-row">', friction_start)
+        if search_from != -1:
+            marker = '    </div>\n    \n\n    <div class="charts-row">'
+            # Only replace the first occurrence by slicing and reconstructing
+            html_content = (
+                html_content[:search_from] +
+                '    </div>\n' + antipattern_html + '\n    \n\n    <div class="charts-row">' +
+                html_content[search_from + len(marker):]
+            )
+
+    return html_content
 
 
 def _build_insights_injection_html(
