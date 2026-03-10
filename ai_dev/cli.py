@@ -117,8 +117,12 @@ def _build_report(
 
     per_session_v2: List[Dict[str, Any]] = []
     for session_id, session_records in sorted(grouped.items(), key=lambda kv: kv[0]):
+        # Auto-detect multi-agent sessions: count unique subagent source files
+        subagent_files = {r["_source_file"] for r in session_records if r.get("_agent_type") == "subagent"}
+        is_orchestrated = len(subagent_files) >= 4
+
         session_bundle = build_feature_bundle(session_records, cfg)
-        session_v2 = analyze_v2(session_bundle["turn_features"], session_bundle["session_features"], cfg)
+        session_v2 = analyze_v2(session_bundle["turn_features"], session_bundle["session_features"], cfg, is_orchestrated=is_orchestrated)
         per_session_v2.append(
             {
                 "session_id": session_id,

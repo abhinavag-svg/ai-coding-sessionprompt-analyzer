@@ -160,11 +160,22 @@ def detect_antipatterns_v2(
     convergence: Dict[str, Any],
     cost_rate: Dict[str, Any],
     config: ScoringConfig | None = None,
+    is_orchestrated: bool = False,
 ) -> List[Dict[str, Any]]:
     cfg = config or ScoringConfig()
     scorable = [t for t in turn_features if t.get("v2_is_scorable_turn")]
     eligible_prompt_turns = [t for t in scorable if t.get("v2_prompt_detector_eligible")]
     duplication_prompt_turns = [t for t in eligible_prompt_turns if "telemetry_injected" not in (t.get("prompt_flags") or [])]
+
+    # Adjust thresholds for orchestrated (multi-agent) sessions
+    gate1_threshold = 6 if is_orchestrated else 5
+    file_thrash_free_reads = 5 if is_orchestrated else int(cfg.file_thrash_free_reads)
+    skip_correction_spiral = is_orchestrated
+    scope_creep_threshold = 150 if is_orchestrated else 300
+
+    # Check if session started with slash command (programmatic invocation)
+    first_user = next((t for t in scorable if t.get("is_user_turn")), None)
+    is_slash_command = first_user and "<command-name>" in (first_user.get("text") or "")
 
     flags: List[Dict[str, Any]] = []
 
@@ -274,11 +285,12 @@ def detect_antipatterns_v2(
                 if fp:
                     read_counts[fp] += 1
                     read_examples.setdefault(fp, _evidence(t, note=f"Read {fp}"))
-    thrash_files = [(fp, cnt) for fp, cnt in read_counts.items() if cnt > 2]
+    # Thrash fires when reads exceed free_reads threshold (default free_reads=2 means >2 triggers)
+    thrash_files = [(fp, cnt) for fp, cnt in read_counts.items() if cnt > file_thrash_free_reads]
     if thrash_files:
         ev = [read_examples[fp] for fp, _ in sorted(thrash_files, key=lambda kv: kv[1], reverse=True)[:5]]
         median_read_tokens = int(median(read_turn_tokens)) if read_turn_tokens else 0
-        redundant_reads = sum(max(0, cnt - int(cfg.file_thrash_free_reads)) for _fp, cnt in thrash_files)
+        redundant_reads = sum(max(0, cnt - file_thrash_free_reads) for _fp, cnt in thrash_files)
         add_flag(
             "file_thrash",
             "medium",
@@ -327,61 +339,63 @@ def detect_antipatterns_v2(
         )
 
     # correction_spiral (Session Convergence 70%, Correction Discipline 30%): 3+ consecutive correction user turns with no tool use between.
-    spiral_segments: List[Tuple[int, int]] = []
-    streak = 0
-    seg_start = None
-    for i, t in enumerate(scorable):
-        if not t.get("is_user_turn"):
-            continue
-        conf = (t.get("v2_correction") or {}).get("confidence")
-        if conf not in {"high", "medium"}:
-            streak = 0
-            seg_start = None
-            continue
-        # Check whether there was assistant tool use since previous user scorable.
-        prev_user_idx = None
-        for j in range(i - 1, -1, -1):
-            if scorable[j].get("is_user_turn"):
-                prev_user_idx = j
-                break
-        if prev_user_idx is None:
-            streak = 1
-            seg_start = i
-            continue
-        tools_between = any(
-            scorable[k].get("is_assistant_turn") and int(scorable[k].get("tool_use_count", 0) or 0) > 0
-            for k in range(prev_user_idx + 1, i)
-        )
-        if tools_between:
-            streak = 1
-            seg_start = i
-            continue
-        if seg_start is None:
-            seg_start = prev_user_idx
-            streak = 2
-        else:
-            streak += 1
-        if streak >= 3:
-            spiral_segments.append((seg_start, i))
-            streak = 0
-            seg_start = None
+    # Skip for orchestrated (multi-agent) sessions where retries are expected.
+    if not skip_correction_spiral:
+        spiral_segments: List[Tuple[int, int]] = []
+        streak = 0
+        seg_start = None
+        for i, t in enumerate(scorable):
+            if not t.get("is_user_turn"):
+                continue
+            conf = (t.get("v2_correction") or {}).get("confidence")
+            if conf not in {"high", "medium"}:
+                streak = 0
+                seg_start = None
+                continue
+            # Check whether there was assistant tool use since previous user scorable.
+            prev_user_idx = None
+            for j in range(i - 1, -1, -1):
+                if scorable[j].get("is_user_turn"):
+                    prev_user_idx = j
+                    break
+            if prev_user_idx is None:
+                streak = 1
+                seg_start = i
+                continue
+            tools_between = any(
+                scorable[k].get("is_assistant_turn") and int(scorable[k].get("tool_use_count", 0) or 0) > 0
+                for k in range(prev_user_idx + 1, i)
+            )
+            if tools_between:
+                streak = 1
+                seg_start = i
+                continue
+            if seg_start is None:
+                seg_start = prev_user_idx
+                streak = 2
+            else:
+                streak += 1
+            if streak >= 3:
+                spiral_segments.append((seg_start, i))
+                streak = 0
+                seg_start = None
 
-    if spiral_segments:
-        ev = [_evidence(scorable[a], note="spiral start") for a, _b in spiral_segments[:2]]
-        add_flag(
-            "correction_spiral",
-            "high",
-            "Detected a correction spiral (multiple consecutive correction turns without tool progress).",
-            "Stop the spiral: restate the full intent in one prompt instead of iterative corrections.",
-            occurrences=len(spiral_segments),
-            impact_budget_points=8.0,
-            per_occurrence_points=8.0,
-            allocations=[
-                {"dimension": "session_convergence", "share": 0.70, "cause_code": "correction_spiral"},
-                {"dimension": "correction_discipline", "share": 0.30, "cause_code": "correction_spiral"},
-            ],
-            evidence=ev,
-        )
+        if spiral_segments:
+            ev = [_evidence(scorable[a], note="spiral start") for a, _b in spiral_segments[:2]]
+            add_flag(
+                "correction_spiral",
+                "high",
+                "Detected a correction spiral (multiple consecutive correction turns without tool progress).",
+                "Stop the spiral: restate the full intent in one prompt instead of iterative corrections.",
+                occurrences=len(spiral_segments),
+                impact_budget_points=8.0,
+                per_occurrence_points=8.0,
+                allocations=[
+                    {"dimension": "session_convergence", "share": 0.70, "cause_code": "correction_spiral"},
+                    {"dimension": "correction_discipline", "share": 0.30, "cause_code": "correction_spiral"},
+                ],
+                evidence=ev,
+            )
 
     # vague_opener (Specificity 60%, Session Convergence 40%)
     vague = 0
@@ -461,33 +475,35 @@ def detect_antipatterns_v2(
         )
 
     # Convergence gate synthetic flags.
+    # Skip gate1 for slash-command (programmatic) sessions or if orchestrated doesn't apply.
     gate1_turns = convergence.get("gate1_user_turns_to_first_productive")
-    if gate1_turns is None:
-        first_user = next((t for t in scorable if t.get("is_user_turn")), None)
-        if first_user:
+    if not is_slash_command:
+        if gate1_turns is None:
+            first_user = next((t for t in scorable if t.get("is_user_turn")), None)
+            if first_user:
+                add_flag(
+                    "convergence_gate1_miss",
+                    "high",
+                    "Execution never reached productive tool use.",
+                    "Front-load intent and acceptance criteria before exploration.",
+                    occurrences=1,
+                    impact_budget_points=6.0,
+                    per_occurrence_points=6.0,
+                    allocations=[{"dimension": "session_convergence", "share": 1.0, "cause_code": "convergence_gate1_miss"}],
+                    evidence=[_evidence(first_user)],
+                )
+        elif int(gate1_turns) > gate1_threshold:
+            first_user = next((t for t in scorable if t.get("is_user_turn")), None)
             add_flag(
                 "convergence_gate1_miss",
                 "high",
-                "Execution never reached productive tool use.",
+                "Execution engaged too late after the intent prompt.",
                 "Front-load intent and acceptance criteria before exploration.",
                 occurrences=1,
                 impact_budget_points=6.0,
                 per_occurrence_points=6.0,
                 allocations=[{"dimension": "session_convergence", "share": 1.0, "cause_code": "convergence_gate1_miss"}],
-                evidence=[_evidence(first_user)],
-            )
-    elif int(gate1_turns) > 3:
-        first_user = next((t for t in scorable if t.get("is_user_turn")), None)
-        add_flag(
-            "convergence_gate1_miss",
-            "high",
-            "Execution engaged too late after the intent prompt.",
-            "Front-load intent and acceptance criteria before exploration.",
-            occurrences=1,
-            impact_budget_points=6.0,
-            per_occurrence_points=6.0,
-            allocations=[{"dimension": "session_convergence", "share": 1.0, "cause_code": "convergence_gate1_miss"}],
-            evidence=[_evidence(first_user)] if first_user else [],
+                evidence=[_evidence(first_user)] if first_user else [],
         )
 
     gate2_count = int(convergence.get("gate2_corrections_between_productive", 0) or 0)
@@ -550,7 +566,8 @@ def detect_antipatterns_v2(
         )
 
     # scope_creep (Session Convergence 100%): many turns and tool variety increases in last third.
-    if len(scorable) > 300:
+    # Threshold adjusted for orchestrated sessions: 150 (normal) vs 300 (orchestrated adjusts upward).
+    if len(scorable) > scope_creep_threshold:
         assistants = [t for t in scorable if t.get("is_assistant_turn")]
         if len(assistants) >= 30:
             split = int(len(assistants) * 2 / 3)
