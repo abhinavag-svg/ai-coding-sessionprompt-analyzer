@@ -1156,6 +1156,9 @@ def inject_into_insights_html(report: Dict[str, Any], html_path: Path, sessions_
         count=1
     )
 
+    # 1b. Inject standalone project cost summary table
+    html_content = _inject_project_costs_table(html_content, per_session_v2)
+
     # 2. Inject project area costs (Section 2)
     html_content = _inject_project_area_costs(html_content, per_session_v2)
 
@@ -1243,6 +1246,95 @@ def _inject_project_area_costs(html_content: str, per_session_v2: List[Dict[str,
         return match.group(0)
 
     html_content = re.sub(area_header_pattern, replace_area_header, html_content, flags=re.DOTALL)
+    return html_content
+
+
+def _inject_project_costs_table(html_content: str, per_session_v2: List[Dict[str, Any]]) -> str:
+    """Inject standalone project cost summary table after stats-row."""
+    import re
+
+    if not per_session_v2:
+        return html_content
+
+    # Aggregate per_session_v2 by project_folder
+    project_stats: Dict[str, Dict[str, Any]] = {}
+    for session in per_session_v2:
+        folder = session.get("project_folder", "unknown")
+        total_cost = float((session.get("session_features") or {}).get("total_cost", 0.0) or 0.0)
+        recoverable = float(session.get("recoverable_cost_total_usd", 0.0) or 0.0)
+
+        if folder not in project_stats:
+            project_stats[folder] = {
+                "total_cost": 0.0,
+                "recoverable": 0.0,
+                "session_count": 0,
+            }
+        project_stats[folder]["total_cost"] += total_cost
+        project_stats[folder]["recoverable"] += recoverable
+        project_stats[folder]["session_count"] += 1
+
+    # Sort by total cost descending
+    sorted_projects = sorted(
+        project_stats.items(),
+        key=lambda x: x[1]["total_cost"],
+        reverse=True
+    )
+
+    if not sorted_projects:
+        return html_content
+
+    # Build table HTML
+    rows = []
+    for project, stats in sorted_projects:
+        total = stats["total_cost"]
+        recoverable = stats["recoverable"]
+        sessions = stats["session_count"]
+        waste_pct = (recoverable / total * 100) if total > 0 else 0.0
+
+        rows.append(
+            f'      <tr style="border-bottom:1px solid #e2e8f0;">'
+            f'\n        <td style="padding:8px; font-family:monospace; font-size:0.875em;">{project}</td>'
+            f'\n        <td style="padding:8px; text-align:center;">{sessions}</td>'
+            f'\n        <td style="padding:8px; text-align:right;">${total:.2f}</td>'
+            f'\n        <td style="padding:8px; text-align:right;">${recoverable:.2f}</td>'
+            f'\n        <td style="padding:8px; text-align:right; color:#f97316;">{waste_pct:.1f}%</td>'
+            f'\n      </tr>'
+        )
+
+    table_html = (
+        '\n    <h2 style="margin-top:32px;">Project Cost Summary '
+        '<span style="font-size:13px;color:#64748b;font-weight:400">(via ai-dev)</span></h2>'
+        '\n    <div style="overflow-x:auto;margin-bottom:32px;">'
+        '\n      <table style="width:100%;border-collapse:collapse;font-size:0.875em;">'
+        '\n        <thead><tr style="border-bottom:2px solid #e2e8f0;text-align:left;">'
+        '\n          <th style="padding:8px;">Project</th>'
+        '\n          <th style="padding:8px;text-align:center;">Sessions</th>'
+        '\n          <th style="padding:8px;text-align:right;">Total Cost</th>'
+        '\n          <th style="padding:8px;text-align:right;">Recoverable</th>'
+        '\n          <th style="padding:8px;text-align:right;">Waste %</th>'
+        '\n        </tr></thead>'
+        '\n        <tbody>'
+        + '\n'.join(rows) +
+        '\n        </tbody>'
+        '\n      </table>'
+        '\n    </div>'
+    )
+
+    # Inject after the stats-row closing div
+    # Match pattern: closing </div> of stats-row followed by </div> and then the next section
+    pattern = r'(</div>\s*\n\s*<div class="stats-row">.*?</div>)'
+    match = re.search(pattern, html_content, flags=re.DOTALL)
+    if match:
+        insert_pos = match.end()
+        html_content = html_content[:insert_pos] + '\n' + table_html + html_content[insert_pos:]
+    else:
+        # Fallback: inject after "stats-row" closing div
+        pattern = r'(<div class="stats-row">.*?</div>)'
+        match = re.search(pattern, html_content, flags=re.DOTALL)
+        if match:
+            insert_pos = match.end()
+            html_content = html_content[:insert_pos] + '\n' + table_html + html_content[insert_pos:]
+
     return html_content
 
 
