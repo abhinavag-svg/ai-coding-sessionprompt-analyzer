@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
@@ -121,6 +123,10 @@ def _build_report(
         subagent_files = {r["_source_file"] for r in session_records if r.get("_agent_type") == "subagent"}
         is_orchestrated = len(subagent_files) >= 4
 
+        # Extract project folder from source file path
+        source_file = (session_records[0].get("_source_file") or "") if session_records else ""
+        project_folder = Path(source_file).parent.name if source_file else ""
+
         session_bundle = build_feature_bundle(session_records, cfg)
         session_v2 = analyze_v2(session_bundle["turn_features"], session_bundle["session_features"], cfg, is_orchestrated=is_orchestrated)
         per_session_v2.append(
@@ -135,6 +141,7 @@ def _build_report(
                 "convergence": session_v2.convergence,
                 "cost_rate": session_v2.cost_rate,
                 "recoverable_cost_total_usd": session_v2.recoverable_cost_total_usd,
+                "project_folder": project_folder,
             }
         )
 
@@ -323,10 +330,49 @@ def _load_analysis_inputs(
     }
 
 
+def _run_insights_refresh() -> Path:
+    """Run claude -p '/insights' to regenerate the Insights HTML report.
+
+    Returns the fixed output path: ~/.claude/usage-data/report.html
+    Raises RuntimeError if the command fails or the file is not created.
+    """
+    # Remove CLAUDECODE from env to bypass nested session guard
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "/insights"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minute timeout
+        )
+        if result.returncode != 0:
+            error_msg = f"claude -p '/insights' failed with code {result.returncode}"
+            if result.stderr:
+                error_msg += f"\nStderr: {result.stderr}"
+            if result.stdout:
+                error_msg += f"\nStdout: {result.stdout}"
+            typer.echo(error_msg, err=True)
+            raise RuntimeError(error_msg)
+    except FileNotFoundError:
+        raise RuntimeError("claude command not found in PATH")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("claude -p '/insights' timed out after 5 minutes")
+
+    insights_path = Path.home() / ".claude" / "usage-data" / "report.html"
+    if not insights_path.exists():
+        raise RuntimeError(f"Insights report was not created at {insights_path}")
+
+    return insights_path
+
+
 @app.command()
 def analyze(
     path: str,
     export: Optional[Path] = typer.Option(None, "--export", help="Export markdown report to a file path."),
+    insights_html: Optional[Path] = typer.Option(None, "--insights-html", help="Path to Claude Code Insights HTML report to inject token economics section into."),
+    refresh_insights: bool = typer.Option(False, "--refresh-insights", help="Run 'claude -p /insights' to regenerate the Insights HTML report before injecting."),
     multi_session: bool = typer.Option(
         False,
         "--multi-session/--single-session",
@@ -382,6 +428,15 @@ def analyze(
     if export:
         export_markdown_report(report, export)
         typer.echo(f"Markdown report exported to {export}")
+
+    if refresh_insights:
+        insights_html = _run_insights_refresh()
+        typer.echo(f"Insights report regenerated at {insights_html}")
+
+    if insights_html:
+        from .reporter import inject_into_insights_html
+        inject_into_insights_html(report, insights_html, sessions_scan_path=Path(path))
+        typer.echo(f"Token economics injected into Insights HTML at {insights_html}")
 
 
 @app.command("cost-range")

@@ -52,6 +52,10 @@ EXPLICIT_CORRECTION_PHRASES: Tuple[str, ...] = (
     "same error",
     "not quite",
     "nope",
+    "wrong approach",
+    "that's not right",
+    "not what i asked",
+    "use the correct",
 )
 
 
