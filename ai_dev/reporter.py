@@ -1113,19 +1113,30 @@ def inject_into_insights_html(report: Dict[str, Any], html_path: Path, sessions_
     recoverable_pct = (recoverable_cost / total_cost * 100) if total_cost > 0 else 0.0
     cache_savings = float(session_features.get("estimated_cache_savings", 0.0) or 0.0)
 
-    # Aggregate top 5 cost anti-patterns
+    # Aggregate top 5 cost anti-patterns with project breakdown
     flag_costs: Dict[str, tuple[float, int]] = {}  # flag_id -> (cost, count)
+    flag_project_costs: Dict[str, Dict[str, tuple[float, int]]] = {}  # flag_id -> project -> (cost, count)
     for session_data in per_session_v2:
         flags = session_data.get("flags") or []
+        project_folder = session_data.get("project_folder", "unknown")
         for flag in flags:
             flag_id = flag.get("flag_id", "unknown")
             cost = float(flag.get("recoverable_cost_usd", 0.0) or 0.0)
+            occurrences = flag.get("occurrences", 1)
 
+            # Aggregate total counts
             if flag_id not in flag_costs:
                 flag_costs[flag_id] = (0.0, 0)
-
             total, count = flag_costs[flag_id]
-            flag_costs[flag_id] = (total + cost, count + flag.get("occurrences", 1))
+            flag_costs[flag_id] = (total + cost, count + occurrences)
+
+            # Aggregate per-project breakdown
+            if flag_id not in flag_project_costs:
+                flag_project_costs[flag_id] = {}
+            if project_folder not in flag_project_costs[flag_id]:
+                flag_project_costs[flag_id][project_folder] = (0.0, 0)
+            proj_total, proj_count = flag_project_costs[flag_id][project_folder]
+            flag_project_costs[flag_id][project_folder] = (proj_total + cost, proj_count + occurrences)
 
     sorted_flags = sorted(flag_costs.items(), key=lambda x: x[1][0], reverse=True)[:5]
 
@@ -1145,6 +1156,9 @@ def inject_into_insights_html(report: Dict[str, Any], html_path: Path, sessions_
         count=1
     )
 
+    # 1b. Inject standalone project cost summary table
+    html_content = _inject_project_costs_table(html_content, per_session_v2)
+
     # 2. Inject project area costs (Section 2)
     html_content = _inject_project_area_costs(html_content, per_session_v2)
 
@@ -1153,7 +1167,7 @@ def inject_into_insights_html(report: Dict[str, Any], html_path: Path, sessions_
         html_content = _inject_session_efficiency_table(html_content, top_sessions, per_session_v2, sessions_scan_path)
 
     # 4. Inject costs into friction categories (anti-patterns section)
-    html_content = _inject_antipattern_costs(html_content, sorted_flags)
+    html_content = _inject_antipattern_costs(html_content, sorted_flags, flag_project_costs)
 
     # 5. Delete the fun-ending section
     html_content = re.sub(
@@ -1235,9 +1249,101 @@ def _inject_project_area_costs(html_content: str, per_session_v2: List[Dict[str,
     return html_content
 
 
+def _inject_project_costs_table(html_content: str, per_session_v2: List[Dict[str, Any]]) -> str:
+    """Inject standalone project cost summary table after stats-row."""
+    import re
+
+    if not per_session_v2:
+        return html_content
+
+    # Aggregate per_session_v2 by project_folder
+    project_stats: Dict[str, Dict[str, Any]] = {}
+    for session in per_session_v2:
+        folder = session.get("project_folder", "unknown")
+        total_cost = float((session.get("session_features") or {}).get("total_cost", 0.0) or 0.0)
+        recoverable = float(session.get("recoverable_cost_total_usd", 0.0) or 0.0)
+
+        if folder not in project_stats:
+            project_stats[folder] = {
+                "total_cost": 0.0,
+                "recoverable": 0.0,
+                "session_count": 0,
+            }
+        project_stats[folder]["total_cost"] += total_cost
+        project_stats[folder]["recoverable"] += recoverable
+        project_stats[folder]["session_count"] += 1
+
+    # Sort by total cost descending
+    sorted_projects = sorted(
+        project_stats.items(),
+        key=lambda x: x[1]["total_cost"],
+        reverse=True
+    )
+
+    if not sorted_projects:
+        return html_content
+
+    # Build table HTML
+    rows = []
+    for project, stats in sorted_projects:
+        total = stats["total_cost"]
+        recoverable = stats["recoverable"]
+        sessions = stats["session_count"]
+        waste_pct = (recoverable / total * 100) if total > 0 else 0.0
+
+        rows.append(
+            f'      <tr style="border-bottom:1px solid #e2e8f0;">'
+            f'\n        <td style="padding:8px; font-family:monospace; font-size:0.875em;">{project}</td>'
+            f'\n        <td style="padding:8px; text-align:center;">{sessions}</td>'
+            f'\n        <td style="padding:8px; text-align:right;">${total:.2f}</td>'
+            f'\n        <td style="padding:8px; text-align:right;">${recoverable:.2f}</td>'
+            f'\n        <td style="padding:8px; text-align:right; color:#f97316;">{waste_pct:.1f}%</td>'
+            f'\n      </tr>'
+        )
+
+    table_html = (
+        '\n    <h2 style="margin-top:32px;">Project Cost Summary '
+        '<span style="font-size:13px;color:#64748b;font-weight:400">(via ai-dev)</span></h2>'
+        '\n    <div style="overflow-x:auto;margin-bottom:32px;">'
+        '\n      <table style="width:100%;border-collapse:collapse;font-size:0.875em;">'
+        '\n        <thead><tr style="border-bottom:2px solid #e2e8f0;text-align:left;">'
+        '\n          <th style="padding:8px;">Project</th>'
+        '\n          <th style="padding:8px;text-align:center;">Sessions</th>'
+        '\n          <th style="padding:8px;text-align:right;">Total Cost</th>'
+        '\n          <th style="padding:8px;text-align:right;">Recoverable</th>'
+        '\n          <th style="padding:8px;text-align:right;">Waste %</th>'
+        '\n        </tr></thead>'
+        '\n        <tbody>'
+        + '\n'.join(rows) +
+        '\n        </tbody>'
+        '\n      </table>'
+        '\n    </div>'
+    )
+
+    # Inject after the stats-row closing div
+    # Match pattern: closing </div> of stats-row followed by </div> and then the next section
+    pattern = r'(</div>\s*\n\s*<div class="stats-row">.*?</div>)'
+    match = re.search(pattern, html_content, flags=re.DOTALL)
+    if match:
+        insert_pos = match.end()
+        html_content = html_content[:insert_pos] + '\n' + table_html + html_content[insert_pos:]
+    else:
+        # Fallback: inject after "stats-row" closing div
+        pattern = r'(<div class="stats-row">.*?</div>)'
+        match = re.search(pattern, html_content, flags=re.DOTALL)
+        if match:
+            insert_pos = match.end()
+            html_content = html_content[:insert_pos] + '\n' + table_html + html_content[insert_pos:]
+
+    return html_content
+
+
 def _find_first_user_prompt(session_id: str, scan_path: Path) -> str:
-    """Find and return the first user message from a session's JSONL file."""
+    """Find and return the first meaningful user message from a session's JSONL file."""
     import json
+
+    # System tags to skip (IDE context, command caveats, etc.)
+    system_tags = ("<ide_opened_file>", "<local-command-caveat>", "<system-reminder>", "<tool_result")
 
     # Search for the session JSONL file
     for jsonl_file in scan_path.glob(f"**/{session_id}.jsonl"):
@@ -1252,8 +1358,23 @@ def _find_first_user_prompt(session_id: str, scan_path: Path) -> str:
                             content = message.get("content", "")
                             # Handle both string and list content
                             if isinstance(content, list):
-                                content = " ".join(str(c) if isinstance(c, dict) else c for c in content if c)
-                            if isinstance(content, str) and content and not content.startswith("<tool_result"):
+                                text_parts = []
+                                for c in content:
+                                    if isinstance(c, dict):
+                                        # Skip tool_result dicts and other dict types
+                                        if c.get("type") == "tool_result":
+                                            continue
+                                        # For other dicts, try to extract text
+                                        text_part = c.get("text", "") or c.get("content", "")
+                                        # Skip system tags in extracted text
+                                        if text_part and not str(text_part).startswith(system_tags):
+                                            text_parts.append(str(text_part))
+                                    elif isinstance(c, str) and not c.startswith(system_tags):
+                                        text_parts.append(c)
+                                content = " ".join(text_parts)
+
+                            # Only return if content is meaningful (not empty)
+                            if isinstance(content, str) and content:
                                 # Return first 100 chars
                                 return content[:100].replace("\n", " ").replace("  ", " ").strip()
                     except (json.JSONDecodeError, KeyError):
@@ -1283,12 +1404,15 @@ def _inject_session_efficiency_table(html_content: str, top_sessions: List[Dict[
         cost = float(session_data.get("cost", 0.0) or 0.0)
         recoverable = float(session_data.get("recoverable_cost_total_usd", 0.0) or 0.0)
 
+        # Get project folder from full session data
+        full_session = session_map.get(session_id, {})
+        project_folder = full_session.get("project_folder", "")
+
         # Get sample prompt
         sample_prompt = _find_first_user_prompt(session_id, scan_path) if scan_path else ""
 
         # Find top issue for this session
         top_issue = ""
-        full_session = session_map.get(session_id, {})
         flags = full_session.get("flags") or []
         if flags:
             top_flag_id = flags[0].get("flag_id", "")
@@ -1298,6 +1422,7 @@ def _inject_session_efficiency_table(html_content: str, top_sessions: List[Dict[
 
         rows.append(f'      <tr style="border-bottom:1px solid #e2e8f0;">'
                    f'\n        <td style="padding:8px; font-family:monospace; font-size:0.875em;">{session_id[:16]}</td>'
+                   f'\n        <td style="padding:8px; font-size:0.85em;">{project_folder}</td>'
                    f'\n        <td style="padding:8px; text-align:center; color:{score_color};">{score:.0f}</td>'
                    f'\n        <td style="padding:8px; text-transform:capitalize;">{shape}</td>'
                    f'\n        <td style="padding:8px; text-align:right;">${cost:.2f}</td>'
@@ -1312,6 +1437,7 @@ def _inject_session_efficiency_table(html_content: str, top_sessions: List[Dict[
         '\n      <table style="width:100%;border-collapse:collapse;font-size:0.875em;">'
         '\n        <thead><tr style="border-bottom:2px solid #e2e8f0;text-align:left;">'
         '\n          <th style="padding:8px;">Session</th>'
+        '\n          <th style="padding:8px;">Project</th>'
         '\n          <th style="padding:8px;text-align:center;">Score</th>'
         '\n          <th style="padding:8px;">Shape</th>'
         '\n          <th style="padding:8px;text-align:right;">Cost</th>'
@@ -1332,8 +1458,8 @@ def _inject_session_efficiency_table(html_content: str, top_sessions: List[Dict[
     return html_content
 
 
-def _inject_antipattern_costs(html_content: str, sorted_flags: List[tuple[str, tuple[float, int]]]) -> str:
-    """Inject anti-pattern costs into the friction categories section."""
+def _inject_antipattern_costs(html_content: str, sorted_flags: List[tuple[str, tuple[float, int]]], flag_project_costs: Dict[str, Dict[str, tuple[float, int]]]) -> str:
+    """Inject anti-pattern costs into the friction categories section with project breakdown."""
     if not sorted_flags:
         return html_content
 
@@ -1341,7 +1467,29 @@ def _inject_antipattern_costs(html_content: str, sorted_flags: List[tuple[str, t
     antipattern_html = '\n    <h3 style="margin-top: 32px; margin-bottom: 16px;">Token Cost by Anti-Pattern (via ai-dev)</h3>\n    <div class="friction-categories">'
     for flag_id, (cost, count) in sorted_flags:
         display_name = _ANTIPATTERN_DISPLAY_NAMES.get(flag_id, flag_id)
-        antipattern_html += f'\n      <div class="friction-category">\n        <div class="friction-title">{display_name}</div>\n        <div class="friction-desc">{count} occurrences • ${cost:.2f} recoverable</div>\n      </div>'
+        antipattern_html += f'\n      <div class="friction-category">'
+        antipattern_html += f'\n        <div class="friction-title">{display_name}</div>'
+        antipattern_html += f'\n        <div class="friction-desc">{count} occurrences • ${cost:.2f} recoverable</div>'
+
+        # Add project breakdown sub-table if available
+        if flag_id in flag_project_costs and flag_project_costs[flag_id]:
+            # Sort projects by cost descending
+            project_items = sorted(
+                flag_project_costs[flag_id].items(),
+                key=lambda x: x[1][0],
+                reverse=True
+            )
+            if project_items:
+                antipattern_html += '\n        <table style="width:100%; margin-top:6px; font-size:0.85em; border-collapse:collapse; color:#64748b;">'
+                for project, (proj_cost, proj_count) in project_items:
+                    antipattern_html += f'\n          <tr style="border-top:1px solid #f1f5f9;">'
+                    antipattern_html += f'\n            <td style="padding:4px 8px; text-align:left;">{project}</td>'
+                    antipattern_html += f'\n            <td style="padding:4px 8px; text-align:right;">{proj_count}x</td>'
+                    antipattern_html += f'\n            <td style="padding:4px 8px; text-align:right;">${proj_cost:.2f}</td>'
+                    antipattern_html += f'\n          </tr>'
+                antipattern_html += '\n        </table>'
+
+        antipattern_html += '\n      </div>'
     antipattern_html += '\n    </div>'
 
     # Find the FIRST occurrence of the friction section and inject only there
