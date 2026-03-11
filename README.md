@@ -56,8 +56,25 @@ python -m ai_dev.cli analyze /path/to/jsonl/root --dedupe --export report.md
 ### Analyze sessions
 
 ```bash
-ai-dev analyze <path> [--export report.md]
+ai-dev analyze <path> [--export report.md] [--insights-html path/to/report.html]
 ```
+
+#### Insights HTML Injection
+
+Inject token economics into Claude Code Insights HTML reports:
+
+```bash
+# Option 1: Inject into existing Insights report (no credits needed)
+ai-dev analyze <path> --insights-html ~/.claude/usage-data/report.html
+
+# Option 2: Regenerate Insights report and inject (requires Claude Code session)
+ai-dev analyze <path> --refresh-insights
+```
+
+The injection adds:
+- Project Cost Summary table showing cost, sessions, and waste % per project
+- Token Cost by Anti-Pattern breakdown with project-level details
+- Session Efficiency table with sample prompts and efficiency scores
 
 ### Cost range across pricing profiles
 
