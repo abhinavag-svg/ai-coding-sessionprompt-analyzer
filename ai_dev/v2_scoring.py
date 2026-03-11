@@ -87,7 +87,12 @@ def compute_v2_scores(
     # Apply cost-weight penalty if recoverable cost data available
     if total_cost_usd > 0.0 and recoverable_cost_total_usd > 0.0:
         recoverable_pct = (recoverable_cost_total_usd / total_cost_usd) * 100.0
-        cost_penalty = min(15.0, recoverable_pct * 0.40)
+        # Tier 1: base penalty (0–15 pts) for first 37.5% recoverable
+        # Tier 2: additional penalty (0–10 pts) for recoverable beyond 37.5%
+        base_penalty = min(15.0, recoverable_pct * 0.40)
+        excess_pct = max(0.0, recoverable_pct - 37.5)
+        extra_penalty = min(10.0, excess_pct * 0.20)
+        cost_penalty = base_penalty + extra_penalty
         composite -= cost_penalty
 
     composite = _clamp(composite, 0.0, 100.0)
