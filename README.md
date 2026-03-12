@@ -1,168 +1,120 @@
 # AI Coding Prompt Optimizer
 
-Analyze Claude Code session logs and generate efficiency reports, cost diagnostics, and actionable recommendations.
+Analyze Claude Code session logs to measure prompt efficiency, identify token waste, and get cost recovery recommendations.
 
-This project reads local JSONL session logs, computes deterministic efficiency signals, and can optionally add local LLM recommendations using Ollama.
-
-## Why This Exists
-
-Most token cost waste comes from tool-output churn (file reads, command outputs, repeated correction loops), not only from user prompt text. This CLI helps make those patterns visible and fixable.
-
-## Project Status
-
-- Language: Python
-- Interface: CLI (`ai-dev analyze`)
-- Optional local recommendations: Ollama-backed
+**Core insight**: 80% of token costs come from tool outputs (file reads, bash results, repeated corrections), not your prompts. This tool makes that visible.
 
 ## Installation
 
-### Option 1: Virtual environment + requirements
-
 ```bash
+# 1. Clone and create venv
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-```
 
-### Option 2: Install as package (recommended)
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
+# 2. Install
 pip install -e .
 ```
 
-## Quick Start
+## Get Started (HTML Report)
 
-Analyze a folder containing Claude session JSONL files:
-Typical Claude session logs are stored in `~/.claude/logs/` or `~/.claude/logs/2024-06-01/`
-```bash
-ai-dev analyze /path/to/jsonl/root --dedupe --export report.md
+The best way to view results is **injected into Claude Code's Insights report**.
+
+### Step 1: Generate Insights HTML
+
+In Claude Code, run:
 ```
-
-Or without editable install:
-
-```bash
-python -m ai_dev.cli analyze /path/to/jsonl/root --dedupe --export report.md
+/insights
 ```
-## Sample Report
+This generates `~/.claude/usage-data/report.html` (it shows your work activity, projects, sessions, etc.)
 
-![Summary Section](docs/images/1.png)
-![Highest Cost Sessions](docs/images/2.png)
-![Best Sessions](docs/images/3.png)
-
-## Core Commands
-
-### Analyze sessions
+### Step 2: Inject ai-dev Token Economics
 
 ```bash
-ai-dev analyze <path> [--export report.md] [--insights-html path/to/report.html]
+ai-dev analyze ~/.claude/projects --insights-html ~/.claude/usage-data/report.html
 ```
 
-#### Insights HTML Injection
+This adds three sections to your Insights HTML:
+- **Project Cost Summary** – total spend, waste %, recoverable cost per project
+- **Session Efficiency** – top sessions ranked by cost with efficiency scores
+- **Token Cost by Anti-Pattern** – where waste comes from (full errors pasted, repeated constraints, etc.)
 
-Inject token economics into Claude Code Insights HTML reports:
+> **📌 Note**: After running the command above, open `~/.claude/usage-data/report.html` in your browser to see the injected sections alongside your original Insights data.
 
+### Example: What You'll See
+
+**Project Cost Summary:**
+| Project | Sessions | Total Cost | Recoverable | Waste % |
+|---------|----------|-----------|-----------|---------|
+| app-bloat-auditor | 9 | $28.59 | $10.10 | 35.3% |
+| ai-coding-sessionprompt-analyzer | 20 | $10.15 | $9.09 | 89.6% |
+| ragchatbot-codebase | 16 | $3.18 | $0.11 | 3.4% |
+
+**Session Efficiency** (ranked by cost):
+| Session | Project | Score | Shape | Cost | Recoverable | Sample Prompt |
+|---------|---------|-------|-------|------|-----------|---|
+| 251a6385 | app-bloat-auditor | 85 | Clean | $9.66 | $1.74 | we are not testing if the app... |
+| 46068018 | app-bloat-auditor | 86 | Clean | $7.18 | $1.39 | Refer to PRD.md Section 6... |
+| 24b119ea | ai-coding-sessionprompt-analyzer | 50 | Correction-Heavy | $6.01 | $6.01 | @docs/specs/product-spec.md... |
+
+**Token Cost by Anti-Pattern:**
+- **Prompt Sent Twice** (Pipeline Bug) – 105 occurrences, $8.74 recoverable
+- **Full Error Pasted** (Not Trimmed) – 16 occurrences, $7.12 recoverable
+
+## Other Commands
+
+### Markdown Report
 ```bash
-# Option 1: Inject into existing Insights report (no credits needed)
-ai-dev analyze <path> --insights-html ~/.claude/usage-data/report.html
-
-# Option 2: Regenerate Insights report and inject (requires Claude Code session)
-ai-dev analyze <path> --refresh-insights
+ai-dev analyze ~/.claude/projects --export report.md
 ```
 
-The injection adds:
-- Project Cost Summary table showing cost, sessions, and waste % per project
-- Token Cost by Anti-Pattern breakdown with project-level details
-- Session Efficiency table with sample prompts and efficiency scores
-
-### Cost range across pricing profiles
-
+### Cost Range Estimates
 ```bash
-ai-dev cost-range <path> [--conservative-file pricing.conservative.json] [--aggressive-file pricing.aggressive.json]
+ai-dev cost-range ~/.claude/projects
 ```
+Shows min/max cost estimates across conservative and aggressive pricing.
 
-## Recommendation Flags
-
-Project-level recommendations are the default recommendation scope when enabled.
-
+### With LLM Recommendations (requires Ollama)
 ```bash
-ai-dev analyze <path> --llm-recommendations
+ai-dev analyze ~/.claude/projects --llm-recommendations
 ```
 
-Enable session-level recommendations as an opt-in extension:
+## What Gets Measured
 
-```bash
-ai-dev analyze <path> --llm-session-recommendations
-```
+- **Prompt Clarity** – Are file paths and function names included?
+- **Context Efficiency** – Are you reading the same file repeatedly?
+- **Rework Rate** – How many corrections did the session need?
+- **AI Consistency** – Did model errors cause rework?
+- **Task Completion** – Did the session converge successfully?
 
-Ollama runtime options:
+Each dimension scores 0–100. Composite score is clamped to [0, 100].
 
-```bash
---llm-model llama3.2:3b
---llm-endpoint http://localhost:11434
---llm-timeout-sec 30
-```
+## Anti-Patterns Detected
 
-## Ollama Setup (Optional)
+- Duplicate prompts (pipeline bug)
+- Full error messages pasted instead of trimmed
+- Repeated file reads
+- Correction spirals (Claude stuck in a loop)
+- Vague prompts without file paths
+- Scope creep (session sprawl)
 
-```bash
-ollama serve
-ollama pull llama3.2:3b
-```
+## Pricing & Cost Modes
 
-If Ollama or the model is unavailable, the report still renders and recommendation sections degrade gracefully with setup guidance.
+Three cost modes:
+- **AUTO** (default): Use reported costs, fall back to split/blended pricing
+- **REPORTED_ONLY**: Only provider-reported costs
+- **DERIVED_ONLY**: Calculate from token counts
 
-## Input Expectations
-
-- Input path is scanned recursively for `.jsonl` files.
-- Works with billable-only mode or all-events mode.
-- Supports deduplication by request/response IDs.
-
-## Configurable Inputs
-
-- Pricing model overrides: `--pricing-file`
-- Scoring thresholds: `--scoring-config`
-
-See sample files in repo root:
-
-- `pricing.example.json`
-- `scoring.example.json`
+Custom pricing: `--pricing-file pricing.json`
 
 ## Development
 
-Install dev dependencies:
-
 ```bash
 pip install -r requirements-dev.txt
+python -m pytest tests/ -v
 ```
 
-Run tests:
-
-```bash
-python -m unittest discover -s tests
-```
-
-Show CLI help:
-
-```bash
-python -m ai_dev.cli --help
-python -m ai_dev.cli analyze --help
-```
-
-## Specification
-
-See `docs/specs/product-spec.md` for the public project spec and architecture summary.
-
-## Project Governance
-
-- Contribution guide: `CONTRIBUTING.md`
-- Code of conduct: `CODE_OF_CONDUCT.md`
-
-## Packaging Recommendation
-
-This should be distributed as a Python package (not npm), because the codebase, runtime, and dependency graph are all Python-native.
+See `CLAUDE.md` for project architecture and `docs/specs/product-spec.md` for detailed spec.
 
 ## License
 
-MIT. See `LICENSE`.
+MIT
