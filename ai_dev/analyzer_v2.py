@@ -37,9 +37,13 @@ def analyze_v2(
     recoverable_cost_total = sum(float(f.get("recoverable_cost_usd", 0.0) or 0.0) for f in flags)
     total_cost = float(session_features.get("total_cost", 0.0) or 0.0)
 
+    # Cap recoverable cost at total cost (flags may overlap in their cost assignments)
+    # Note: individual flag costs are kept as-is for semantic accuracy; capping is done at reporting level
+    capped_recoverable = min(recoverable_cost_total, total_cost)
+
     dimensions, deductions, scores = compute_v2_scores(
         flags, convergence, cost_rate, cfg,
-        recoverable_cost_total_usd=recoverable_cost_total,
+        recoverable_cost_total_usd=capped_recoverable,
         total_cost_usd=total_cost
     )
 
@@ -50,5 +54,5 @@ def analyze_v2(
         deductions=deductions,
         convergence=convergence,
         cost_rate=cost_rate,
-        recoverable_cost_total_usd=round(sum(float(f.get("recoverable_cost_usd", 0.0) or 0.0) for f in flags), 6),
+        recoverable_cost_total_usd=round(capped_recoverable, 6),
     )

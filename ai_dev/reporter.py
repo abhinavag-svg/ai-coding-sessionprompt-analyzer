@@ -1116,6 +1116,7 @@ def inject_into_insights_html(report: Dict[str, Any], html_path: Path, sessions_
     # Aggregate top 5 cost anti-patterns with project breakdown
     flag_costs: Dict[str, tuple[float, int]] = {}  # flag_id -> (cost, count)
     flag_project_costs: Dict[str, Dict[str, tuple[float, int]]] = {}  # flag_id -> project -> (cost, count)
+    uncapped_flag_total = 0.0
     for session_data in per_session_v2:
         flags = session_data.get("flags") or []
         project_folder = session_data.get("project_folder", "unknown")
@@ -1123,6 +1124,7 @@ def inject_into_insights_html(report: Dict[str, Any], html_path: Path, sessions_
             flag_id = flag.get("flag_id", "unknown")
             cost = float(flag.get("recoverable_cost_usd", 0.0) or 0.0)
             occurrences = flag.get("occurrences", 1)
+            uncapped_flag_total += cost
 
             # Aggregate total counts
             if flag_id not in flag_costs:
@@ -1137,6 +1139,20 @@ def inject_into_insights_html(report: Dict[str, Any], html_path: Path, sessions_
                 flag_project_costs[flag_id][project_folder] = (0.0, 0)
             proj_total, proj_count = flag_project_costs[flag_id][project_folder]
             flag_project_costs[flag_id][project_folder] = (proj_total + cost, proj_count + occurrences)
+
+    # Scale flag costs proportionally if they exceed total recoverable (due to overlapping flag definitions)
+    scaling_factor = (recoverable_cost / uncapped_flag_total) if uncapped_flag_total > 0 else 1.0
+    if scaling_factor < 1.0:
+        # Apply scaling to individual flag costs for display
+        scaled_flag_costs: Dict[str, tuple[float, int]] = {}
+        for flag_id, (total, count) in flag_costs.items():
+            scaled_flag_costs[flag_id] = (round(total * scaling_factor, 6), count)
+        flag_costs = scaled_flag_costs
+
+        # Also scale per-project costs
+        for flag_id in flag_project_costs:
+            for project_folder, (proj_total, proj_count) in flag_project_costs[flag_id].items():
+                flag_project_costs[flag_id][project_folder] = (round(proj_total * scaling_factor, 6), proj_count)
 
     sorted_flags = sorted(flag_costs.items(), key=lambda x: x[1][0], reverse=True)[:5]
 
@@ -1193,6 +1209,8 @@ def _inject_project_area_costs(html_content: str, per_session_v2: List[Dict[str,
         if folder:
             total_cost = float((session.get("session_features") or {}).get("total_cost", 0.0) or 0.0)
             recoverable = float(session.get("recoverable_cost_total_usd", 0.0) or 0.0)
+            # Ensure recoverable never exceeds total_cost per session
+            recoverable = min(recoverable, total_cost)
             if folder not in folder_costs:
                 folder_costs[folder] = (0.0, 0.0)
             c, r = folder_costs[folder]
@@ -1262,6 +1280,8 @@ def _inject_project_costs_table(html_content: str, per_session_v2: List[Dict[str
         folder = session.get("project_folder", "unknown")
         total_cost = float((session.get("session_features") or {}).get("total_cost", 0.0) or 0.0)
         recoverable = float(session.get("recoverable_cost_total_usd", 0.0) or 0.0)
+        # Ensure recoverable never exceeds total_cost per session
+        recoverable = min(recoverable, total_cost)
 
         if folder not in project_stats:
             project_stats[folder] = {
