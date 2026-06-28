@@ -32,7 +32,7 @@ Repository = "https://github.com/abhinavag-svg/ai-coding-prompt-optimizer"
 Issues = "https://github.com/abhinavag-svg/ai-coding-prompt-optimizer/issues"
 
 [project.scripts]
-ai-dev = "ai_dev.cli:app"
+ai-dev = "ai_dev.cli:main"
 
 [tool.setuptools]
 include-package-data = false

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
+import urllib.parse
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
@@ -330,11 +332,64 @@ def _load_analysis_inputs(
     }
 
 
+def _normalize_insights_html_flag(argv: list[str]) -> list[str]:
+    normalized = []
+    idx = 0
+    while idx < len(argv):
+        arg = argv[idx]
+        if arg == "--insights-html":
+            next_arg = argv[idx + 1] if idx + 1 < len(argv) else None
+            if next_arg is None or next_arg.startswith("--"):
+                normalized.append("--insights-html=")
+            else:
+                normalized.append(arg)
+            idx += 1
+            continue
+        normalized.append(arg)
+        idx += 1
+    return normalized
+
+
+def _find_latest_insights_report() -> Path:
+    insights_dir = Path.home() / ".claude" / "usage-data"
+    if not insights_dir.exists() or not insights_dir.is_dir():
+        raise FileNotFoundError(
+            f"Claude Insights directory not found: {insights_dir}. Run `claude -p /insights` first."
+        )
+
+    candidates = sorted(
+        [p for p in insights_dir.glob("report*.html") if p.is_file()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        raise FileNotFoundError(
+            f"No Insights HTML reports found under {insights_dir}."
+        )
+    return candidates[0]
+
+
+def _resolve_insights_html_option(insights_html: Optional[str]) -> Optional[Path]:
+    if insights_html is None:
+        return None
+    if insights_html == "":
+        return _find_latest_insights_report()
+
+    if insights_html.startswith("file://"):
+        parsed = urllib.parse.urlparse(insights_html)
+        if parsed.scheme != "file" or not parsed.path:
+            raise ValueError(f"Invalid file URI for Insights HTML: {insights_html}")
+        return Path(parsed.path)
+
+    return Path(insights_html).expanduser()
+
+
 def _run_insights_refresh() -> Path:
     """Run claude -p '/insights' to regenerate the Insights HTML report.
 
-    Returns the fixed output path: ~/.claude/usage-data/report.html
-    Raises RuntimeError if the command fails or the file is not created.
+    Returns the most recently generated report under ~/.claude/usage-data
+    (Claude Code may name it report.html, a timestamped report-*.html, or both).
+    Raises RuntimeError if the command fails or no report file is found.
     """
     # Remove CLAUDECODE from env to bypass nested session guard
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
@@ -360,18 +415,21 @@ def _run_insights_refresh() -> Path:
     except subprocess.TimeoutExpired:
         raise RuntimeError("claude -p '/insights' timed out after 5 minutes")
 
-    insights_path = Path.home() / ".claude" / "usage-data" / "report.html"
-    if not insights_path.exists():
-        raise RuntimeError(f"Insights report was not created at {insights_path}")
-
-    return insights_path
+    try:
+        return _find_latest_insights_report()
+    except FileNotFoundError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 @app.command()
 def analyze(
     path: str,
     export: Optional[Path] = typer.Option(None, "--export", help="Export markdown report to a file path."),
-    insights_html: Optional[Path] = typer.Option(None, "--insights-html", help="Path to Claude Code Insights HTML report to inject token economics section into."),
+    insights_html: Optional[str] = typer.Option(
+        None,
+        "--insights-html",
+        help="Optional file path or file URI to Claude Code Insights HTML report to inject token economics into. Use `--insights-html=` or the bare flag to auto-select the latest generated report.",
+    ),
     refresh_insights: bool = typer.Option(False, "--refresh-insights", help="Run 'claude -p /insights' to regenerate the Insights HTML report before injecting."),
     multi_session: bool = typer.Option(
         False,
@@ -432,6 +490,8 @@ def analyze(
     if refresh_insights:
         insights_html = _run_insights_refresh()
         typer.echo(f"Insights report regenerated at {insights_html}")
+    elif insights_html is not None:
+        insights_html = _resolve_insights_html_option(insights_html)
 
     if insights_html:
         from .reporter import inject_into_insights_html
@@ -501,5 +561,12 @@ def compare(_: str = typer.Argument("")):
     typer.echo("compare command will be implemented in Phase 6")
 
 
+def main(argv: Optional[list[str]] = None) -> None:
+    if argv is None:
+        argv = sys.argv[1:]
+    argv = _normalize_insights_html_flag(argv)
+    app(argv)
+
+
 if __name__ == "__main__":
-    app()
+    main()

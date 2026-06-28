@@ -1087,6 +1087,9 @@ def export_markdown_report(report: Dict[str, Any], out_path: str | Path) -> None
     output_path.write_text(build_markdown_report(report), encoding="utf-8")
 
 
+_AI_DEV_INJECTION_MARKER = "<!-- ai-dev-token-economics-injected -->"
+
+
 def inject_into_insights_html(report: Dict[str, Any], html_path: Path, sessions_scan_path: Optional[Path] = None) -> None:
     """Inject ai-dev token economics section into Claude Code Insights HTML report.
 
@@ -1100,6 +1103,13 @@ def inject_into_insights_html(report: Dict[str, Any], html_path: Path, sessions_
         raise FileNotFoundError(f"Insights HTML file not found: {html_path}")
 
     html_content = html_path.read_text(encoding="utf-8")
+
+    if _AI_DEV_INJECTION_MARKER in html_content:
+        raise ValueError(
+            f"{html_path} already has ai-dev token economics injected. "
+            "Regenerate a fresh Insights report (e.g. `claude -p /insights` or --refresh-insights) "
+            "before injecting again, to avoid duplicating sections."
+        )
 
     # Extract data from report
     v2 = report.get("v2") or {}
@@ -1192,6 +1202,9 @@ def inject_into_insights_html(report: Dict[str, Any], html_path: Path, sessions_
         html_content,
         flags=re.DOTALL
     )
+
+    # 6. Mark this file as injected so a rerun refuses to duplicate sections
+    html_content = html_content.replace("</body>", f"{_AI_DEV_INJECTION_MARKER}\n</body>", 1)
 
     # Write back
     html_path.write_text(html_content, encoding="utf-8")
