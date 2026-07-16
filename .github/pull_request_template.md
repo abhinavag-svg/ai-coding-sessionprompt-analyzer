@@ -8,7 +8,7 @@ Describe what this PR changes and why.
 
 ## Validation
 
-- [ ] Ran `python -m unittest discover -s tests`
+- [ ] Ran `python -m pytest tests test_insights_injection.py -q`
 - [ ] Ran relevant CLI command(s)
 - [ ] Updated docs/spec where applicable
 

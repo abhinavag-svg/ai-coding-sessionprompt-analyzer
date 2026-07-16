@@ -4,8 +4,15 @@ import json
 from pathlib import Path
 from typing import Dict, Tuple
 
-from .constants import DEFAULT_MODEL_PRICING_PER_1K, FALLBACK_MODEL_BLENDED_PER_1K
-from .models import CostMode, CostSource, UsageBuckets
+from .constants import (
+    BUNDLED_AGGRESSIVE_BLENDED_PER_1K,
+    BUNDLED_AGGRESSIVE_MODEL_PRICING_PER_1K,
+    BUNDLED_CONSERVATIVE_BLENDED_PER_1K,
+    BUNDLED_CONSERVATIVE_MODEL_PRICING_PER_1K,
+    DEFAULT_MODEL_PRICING_PER_1K,
+    FALLBACK_MODEL_BLENDED_PER_1K,
+)
+from .models import CostMode, CostSource, PricingProfile, UsageBuckets
 
 
 def load_pricing_file(pricing_file: Path) -> tuple[Dict[str, Dict[str, float]], Dict[str, float]]:
@@ -30,6 +37,25 @@ def load_pricing_file(pricing_file: Path) -> tuple[Dict[str, Dict[str, float]], 
             normalized_blended[model_key.lower()] = float(rate)
 
     return normalized_split, normalized_blended
+
+
+def bundled_pricing(profile: PricingProfile) -> tuple[Dict[str, Dict[str, float]] | None, Dict[str, float] | None]:
+    if profile == PricingProfile.DEFAULT:
+        return DEFAULT_MODEL_PRICING_PER_1K, FALLBACK_MODEL_BLENDED_PER_1K
+    if profile == PricingProfile.CONSERVATIVE:
+        return BUNDLED_CONSERVATIVE_MODEL_PRICING_PER_1K, BUNDLED_CONSERVATIVE_BLENDED_PER_1K
+    if profile == PricingProfile.AGGRESSIVE:
+        return BUNDLED_AGGRESSIVE_MODEL_PRICING_PER_1K, BUNDLED_AGGRESSIVE_BLENDED_PER_1K
+    raise ValueError(f"Unsupported pricing profile: {profile}")
+
+
+def bundled_pricing_json(profile: PricingProfile) -> str:
+    split_rates, blended_rates = bundled_pricing(profile)
+    data = {
+        "split_per_1k": split_rates or {},
+        "blended_per_1k": blended_rates or {},
+    }
+    return json.dumps(data, indent=2, sort_keys=True) + "\n"
 
 
 def _find_split_rates(model: str, split_pricing: Dict[str, Dict[str, float]] | None = None) -> Dict[str, float] | None:

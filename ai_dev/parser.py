@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Iterator, List, cast
 
 from .models import NormalizedEvent, UsageBuckets
+from .codex_parser import iter_codex_events
 
 
 def find_jsonl_files(root: Path) -> List[Path]:
@@ -126,10 +127,11 @@ def iter_normalized_events(file_path: Path) -> Iterator[NormalizedEvent]:
             )
 
 
-def load_events(root: Path, billable_only: bool = True) -> List[NormalizedEvent]:
+def load_events(root: Path, billable_only: bool = True, source: str = "claude") -> List[NormalizedEvent]:
     events: List[NormalizedEvent] = []
     for jsonl_file in find_jsonl_files(root):
-        for event in iter_normalized_events(jsonl_file):
+        iterator = iter_codex_events(jsonl_file) if source == "codex" else iter_normalized_events(jsonl_file)
+        for event in iterator:
             if billable_only and not event.is_billable:
                 continue
             events.append(event)

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**AI Coding Prompt Optimizer** (codename: "Vibe Coding Optimizer") analyzes Claude Code sessions to measure and optimize AI prompt efficiency. The system reads session logs (JSONL format) and produces efficiency scores, cost breakdowns, and rule-based recommendations to help developers waste fewer tokens.
+**AI Coding Prompt Optimizer** (codename: "Vibe Coding Optimizer") analyzes Claude Code and Codex sessions to measure and optimize AI prompt efficiency. Source-specific JSONL adapters feed a shared scoring and evidence pipeline.
 
 **Origin**: Built from lessons learned optimizing a production Shopify app development workflow in 7 days using only $20 in AI token budget.
 
@@ -101,13 +101,16 @@ Reporter (reporter.py)
 
 | Module | Purpose |
 |--------|---------|
-| **cli.py** | Entry point with typer commands (analyze, cost-range, compare) |
+| **cli.py** | Entry point with typer commands (`insights`, `analyze`, `cost-range`, `compare`) |
 | **parser.py** | JSONL ingestion, normalization, billability detection |
+| **codex_parser.py** | Isolated adapter for Codex rollout messages, tool calls, project metadata, and token counts |
 | **costing.py** | Token-to-USD conversion with flexible pricing strategies |
 | **feature_extractor.py** | Compute turn and session metrics (corrections, file reads, vague phrases, etc.) |
 | **rule_engine.py** | Deterministic rule evaluation (no LLM needed) |
 | **scoring.py** | Efficiency score calculation with weighted subscores |
-| **reporter.py** | CLI, markdown report generation, and Claude Code Insights HTML injection |
+| **reporter.py** | CLI and Markdown rendering plus the compatibility entry point for Insights augmentation |
+| **html_reports.py** | Safe Insights runtime augmentation and standalone evidence HTML |
+| **instruction_candidates.py** | Evidence-backed, review-only project instruction proposals |
 | **dedupe.py** | Event deduplication by request/response IDs |
 | **constants.py** | Scoring thresholds, benchmark bands |
 
@@ -121,7 +124,7 @@ Reporter (reporter.py)
 
 ## Testing
 
-**47 unit tests** (32 core + 15 new integration tests) covering:
+The automated test suite covers:
 - Anti-pattern flag detection (all 12 flags with boundary conditions)
 - Session grouping and multi-agent auto-detection
 - Per-session rollup generation
@@ -235,7 +238,7 @@ See [memory/project-context.md](../.claude/projects/-Users-abhinav-projects-git-
 ✅ **PR #2**: Scoring recalibration (multi-agent auto-detection, threshold tuning, cost-weight penalty)
 ✅ **Follow-up**: V2 correction detection fix + insights HTML injection (`--insights-html` flag)
 ✅ **Documentation unification**: Removed all V1/V2 version references; single `analyze` command on V2 scoring path
-✅ **47 unit tests**: All passing (32 core + 15 new integration tests)
+✅ **Automated tests**: Core analysis, scoring, recommendations, safe HTML augmentation, and evidence reporting
 ✅ **Insights refresh automation**: Added `--refresh-insights` flag to auto-invoke `claude -p /insights` before injection
 
 ## Future Work

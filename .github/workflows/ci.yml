@@ -29,5 +29,4 @@ jobs:
           pip install -e .
 
       - name: Run unit tests
-        run: |
-          python -m unittest discover -s tests
+        run: python -m pytest tests test_insights_injection.py -q

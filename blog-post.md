@@ -1,141 +1,562 @@
-# A Mathematical Formula for Your AI Coding Efficiency — Built to Complement Claude Insights
+# Why I Built a Session-Level Analyzer for Claude Code, Even Though Claude Insights Already Exists
 
-Claude's Insights tool is genuinely impressive. If you haven't looked at it closely, you should. It reads your session history, identifies friction patterns, categorizes what went wrong and why, estimates satisfaction, and even drafts CLAUDE.md additions tailored to your specific mistakes. For behavioral analysis at the project level, it goes much further than most people expect from a usage dashboard.
+Claude Insights already exists, and it is genuinely useful.
 
-So when I started building a prompt efficiency analyzer, the honest question wasn't "does this already exist?" It was: "what specifically doesn't Insights do, and is that gap worth filling?"
+It tells you what kinds of work you do, where friction shows up, which sessions went poorly, and what patterns repeat across a project. It can even suggest improvements to your `CLAUDE.md`. For project-level reflection, it is much better than most people expect.
 
-The answer I landed on: Insights gives you a narrative. What I wanted was a formula — a deterministic, reproducible, session-level score that I could track over time, compare across sessions, and use to measure whether my prompting habits were actually improving. Not a qualitative summary. A number with a derivation I could audit.
+So when I started building this tool, the real question was not:
 
-That distinction turned out to matter more than I expected.
+> "Does Claude already have something like this?"
+
+It was:
+
+> "What is still missing if Insights already gives me a smart qualitative summary?"
+
+The answer I kept running into was this: I needed **session-level, deterministic, auditable feedback**.
+
+I wanted to know:
+
+- Which exact session was wasteful?
+- On which dimensions did it break down?
+- Was the waste caused by my prompt, by repeated context, or by model behavior?
+- How much of that waste was likely recoverable?
+- Was I actually getting better week over week?
+
+Insights gave me narrative understanding. I wanted a formula I could inspect, compare, and track over time.
+
+That is why this project exists.
 
 **GitHub:** [github.com/abhinavag-svg/ai-coding-sessionprompt-analyzer](https://github.com/abhinavag-svg/ai-coding-sessionprompt-analyzer)
 
 ---
 
-## What Insights Does Well — And Where a Formula Adds Something Different
+## A Concrete Example of the Gap
 
-Insights analyzes your sessions holistically. It reads across your full project history, identifies recurring friction patterns like "wrong approach" or "buggy code," and tells you which specific sessions exemplify each pattern. It's LLM-powered, which means it can reason about context, connect dots across disparate sessions, and produce natural language recommendations that feel genuinely useful.
+One of the saved reports I analyzed made the difference very obvious.
 
-What it produces is inherently qualitative — a well-reasoned assessment. That's actually appropriate for the level it operates at. Insights is answering "what's going wrong in my workflow?" which is a question that benefits from judgment and synthesis.
+At the project level, the analyzer repo itself showed:
 
-But there's a complementary question that a qualitative summary can't fully answer: **"By exactly how much did this session underperform, on which specific dimensions, and how does that compare to my session last Tuesday?"**
+- `$10.15` total cost
+- `$9.09` estimated recoverable
+- `89.6%` waste
 
-That question requires a formula. Specifically, it requires:
+At the session level, one session in that same project was scored:
 
-- A consistent scoring rubric applied identically to every session
-- Dimension-level subscores, not just an overall assessment, so you can isolate what changed
-- Attribution that separates your behavior from the model's behavior mathematically, not just descriptively
-- A recoverable cost estimate in dollars, not just a pattern label
-- Session-to-session comparability — so you can tell if you're actually getting better
+- `50/100`
+- shape: `Correction-Heavy`
+- cost: `$6.01`
+- recoverable: `$6.01`
 
-Insights tells you that you had 13 "wrong approach" friction events across 24 sessions. The prompt optimizer tells you that in session 7, your Rework Rate score was 8/15 because two correction turns within the first 5 exchanges indicate your opening prompt lacked acceptance criteria — and the estimated recoverable cost of that pattern across the project is $X.
+That is exactly the kind of thing I wanted to see.
 
-Both views are true. They answer different questions.
-
----
-
-## Why a Mathematical Model — Not Just Pattern Detection
-
-The core problem with scoring AI coding sessions deterministically is attribution. When a session costs more than expected, the cause could be any combination of things: prompts that were too vague, context that kept getting re-injected, the model exploring files instead of writing code, corrections that compounded on each other.
-
-These causes overlap and interact. A single bad prompt can trigger a file read cascade *and* a correction loop — and naive analysis double-counts the cost. You end up penalizing the same behavior twice and the score becomes noise.
-
-Building a proper scoring model required solving three specific problems:
-
-**1. Separating what you control from what Claude controls.** A correction turn could mean your prompt was underspecified, or it could mean the model made an error on a perfectly good prompt. Those have completely different remedies. Collapsing them into a single "correction penalty" makes the score look precise while being diagnostically useless. The model explicitly splits rework into *prompt-induced* (your side) and *model-induced* (Claude's side) before scoring either.
-
-**2. Scaling from session to project.** A single session is too noisy for reliable signal. One expensive session might reflect a genuinely complex task — not bad prompting. Meaningful patterns emerge across sessions: the constraint you keep re-injecting turn after turn, the vague opener that reliably triggers a 15-file exploration cascade. The tool aggregates session-level scores into project-level rollups before drawing conclusions about habits.
-
-**3. Expressing waste in dollars, not just labels.** A score of 71/100 doesn't change behavior. "Your `repeated_constraint` pattern cost an estimated $12.40 across this project — and it would take 30 seconds to move that constraint into `CLAUDE.md`" does. The formula translates behavioral patterns into recoverable dollar estimates.
+Claude Insights can tell me that a broader pattern exists across the project.
+The session-level analyzer tells me which exact session went sideways, how badly, and which anti-patterns drove the waste.
 
 ---
 
-## The Key Insight: 80% of Token Cost Comes From Tool Outputs
+## The Problem I Felt Personally
 
-Here's what reading JSONL session logs surfaces that most developers using AI coding agents don't realize:
+This tool came out of a frustration I kept having while building real projects with Claude Code.
 
-**80% of your token costs come from tool outputs — file reads, bash results, grep outputs — not from your actual prompts.**
+Some sessions felt incredibly effective. I would give Claude a clear target, it would read the right files, make the change, run the right checks, and finish cleanly.
 
-When you write a vague prompt like "fix the authentication bug," Claude doesn't just generate a response. It reads 15 files trying to figure out which authentication bug you mean. Each of those tool calls pumps tokens into your context window — and you pay for every one of them.
+Other sessions felt expensive and messy:
 
-A more specific prompt — "fix the JWT expiration check in `app/middleware/auth.ts`, the `verifyToken` function is not handling the `exp` claim correctly" — might trigger 2 file reads instead of 15. Same task, fraction of the cost.
+- too many file reads
+- repeated corrections
+- the same constraints restated over and over
+- long loops that should have been one clean pass
+- work that was almost done, but needed multiple prompts to get there
 
-Insights can identify that you have a "wrong approach" pattern. The token-level view this tool provides explains the *mechanical cost* of that pattern — exactly how many tokens the exploration cascade consumed, which turn it spiked on, and how much of it was recoverable.
+The problem was not just that these sessions were annoying. It was that I had **no precise way to measure why they were expensive**.
 
----
+Token spend alone was not enough.
+Narrative summaries alone were not enough.
+What I wanted was a way to look back at a session and say:
 
-## The Scoring Model
+> "This cost more than it should have because the opening prompt was vague, the same files were re-read, and the task entered a correction spiral."
 
-The tool produces a composite efficiency score (0–100) across five weighted dimensions, applied to every session independently:
-
-| Dimension | Weight | What It Measures |
-|---|---|---|
-| Prompt Clarity | 25% | Prompt concreteness — penalized only when vagueness caused a correction |
-| Context Efficiency | 30% | Tokens/turn benchmarks, repeated file reads, constraint re-injection |
-| Rework Rate | 15% | Prompt-induced corrections and repeated constraints |
-| AI Consistency | 10% | Model-induced corrections and unknown failures |
-| Task Completion | 20% | Session arc: engagement, continuity, settlement |
-
-Context Efficiency uses benchmark bands: Excellent (1k–8k tokens/turn), Normal (8k–20k), Heavy (20k–40k), Over-context (>40k sustained), with industry guardrails at median <12k and P90 <30k tokens/turn.
-
-Task Completion models session health as three convergence gates: did productive tool use start within 3 turns of the opening prompt (Engagement)? Did execution sustain without correction spirals (Continuity)? Did the session end cleanly rather than mid-loop (Settlement)?
-
-The split between Rework Rate and AI Consistency is the design decision that matters most. Both capture correction turns — but they measure different causes with different owners. Collapsing them, as the first version of this tool did, produces a score that feels precise but tells you nothing about what to actually fix.
+And I wanted that diagnosis to be reproducible.
 
 ---
 
-## Nine Named Anti-Patterns With Fixed Impact Budgets
+## Why Session-Level Analysis Was Missing
 
-The scoring is driven by nine deterministic anti-pattern detectors — no LLM required, just pattern matching on observable signals in the JSONL logs.
+Claude Insights operates at a very useful level: the project and behavior level.
 
-**High severity:** Error dumps (pasting full stack traces instead of trimming to the relevant error), repeated constraints (restating the same rule in 3+ turns instead of putting it in `CLAUDE.md`), correction spirals (3+ consecutive user turns with no tool use), and abandoned sessions (session ends mid-correction loop with no resolution).
+It can tell you:
 
-**Medium severity:** Vague openers (opening prompt under 20 tokens, immediately followed by a correction), file thrashing (same file read more than twice), prompt duplication (same text sent twice in one message), scope creep (session exceeds 300 turns with tool variety still expanding), and missing scaffolding (specific prompt still triggers model-induced correction).
+- your most common friction types
+- what kinds of work you spend time on
+- how sessions tend to go wrong
+- what recurring habits might belong in `CLAUDE.md`
 
-Each anti-pattern carries a fixed point budget, split proportionally across the dimensions it affects. A `repeated_constraint` flag deducts from both Rework Rate (75%) and Context Efficiency (25%). The split prevents double-counting while preserving diagnostic precision — you know exactly where in the score the penalty landed and why.
+That is valuable, and this project is not trying to replace it.
+
+But there is another level of analysis that matters if you care about prompt quality as an engineering discipline: the **single session**.
+
+A session is where prompting choices actually get made.
+
+That is where you can observe:
+
+- whether the first prompt was specific enough
+- whether context was scoped well or sprayed too broadly
+- whether Claude had to re-read the same files repeatedly
+- whether corrections came from prompt ambiguity or model instability
+- whether the task converged cleanly or died mid-loop
+
+Project summaries are excellent for pattern recognition.
+Session scoring is better for **measurement**.
+
+If you want to improve your workflow, you need both.
 
 ---
 
-## Session-Level Analysis, Project-Level Rollup
+## Why Insights and This Tool Can Coexist
 
-The tool operates at two levels simultaneously, because that's the only way to separate signal from noise.
+The cleanest way to describe the difference is this:
 
-At the **session level**, each run produces a scored efficiency report: which anti-patterns fired, which turns were the most expensive, what the model spent its time on, and whether the session converged cleanly or ended in an unresolved correction loop.
+- **Claude Insights** gives you a smart narrative about your work.
+- **This tool** gives you a deterministic scorecard for each session.
 
-At the **project level**, the tool rolls up session scores to surface patterns that only become statistically visible across time. A single vague opener might be an anomaly. The same constraint re-injected in six consecutive sessions is a habit — and it has a recoverable dollar value attached to it, calculated in three layers: direct waste (redundant tokens in the repeated phrase), bounded rework (downstream tokens in a capped window after the triggering prompt), and project rollup (cumulative across all sessions).
+Insights is answering:
 
-This is where the tool pairs naturally with what Insights already surfaces. Insights tells you that "wrong approach" was your top friction type across 13 sessions. The project rollup tells you the token cost of that pattern, which sessions drove the most waste, and which specific prompting habit was the primary cause.
+> "What seems to be happening across my workflow?"
+
+This tool is answering:
+
+> "How exactly did this session perform, why did it score that way, and what part of the waste was recoverable?"
+
+Those are not competing questions.
+They are complementary ones.
+
+In fact, the best experience is using them together:
+
+- Insights provides the broad behavioral story.
+- Session-level analysis provides the measurement layer underneath it.
+
+That measurement layer matters because once you have a deterministic per-session score, you can:
+
+- compare one session to another
+- benchmark your own prompting habits over time
+- attach specific anti-patterns to specific costs
+- quantify improvement instead of just describing it
+
+---
+
+## The Core Insight That Changed How I Thought About Prompting
+
+The biggest thing I learned from reading Claude Code session logs is this:
+
+> Most of the cost is usually not your typed prompt. It is the context explosion that follows.
+
+In practice, a vague request does not just generate a vague answer.
+It often triggers a chain of tool calls:
+
+- file reads
+- grep results
+- bash output
+- repeated exploration
+- repeated clarification
+
+That output becomes context.
+And that context is where a lot of the spend comes from.
+
+This changed the entire framing of the project for me.
+I stopped thinking only about "Was the prompt good?"
+I started thinking about:
+
+> "Did the prompt cause an expensive session shape?"
+
+That is a much more useful question.
+
+---
+
+## What "Deterministic" Means Here
+
+This word matters, so it is worth being explicit.
+
+In this project, "deterministic" means:
+
+- the core score is computed from fixed rules over JSONL session logs
+- the same session should produce the same result on repeated runs
+- every deduction can be traced back to an observable signal
+- the core scoring path does not require an LLM call
+
+There may be optional recommendation layers elsewhere in the product, but the core methodology is rule-based and auditable.
+
+---
+
+## The Methodology: How the Score Is Calculated
+
+The scoring model is intentionally deterministic.
+The core analyzer does not rely on an LLM to decide whether a session was efficient.
+
+Instead, it parses Claude Code JSONL logs and computes a composite score out of five weighted dimensions:
+
+| Dimension | Weight | What it measures |
+|---|---:|---|
+| Prompt Clarity | 25 | Was the prompt concrete enough to guide execution? |
+| Context Efficiency | 30 | Did the session send the right amount of context, without repeated reads or context thrash? |
+| Rework Rate | 15 | How much rework came from prompting habits? |
+| AI Consistency | 10 | How much rework appeared model-induced rather than prompt-induced? |
+| Task Completion | 20 | Did the session engage, sustain, and converge cleanly? |
+
+The analyzer starts from observable signals in the logs:
+
+- prompt text
+- token counts
+- tool calls
+- turn sequencing
+- repeated file reads
+- correction turns
+- session endings
+
+From there it derives scores and anti-patterns.
+
+### 1. Prompt Clarity
+
+This dimension looks for signs that the opening prompt gave Claude enough direction:
+
+- file paths
+- symbol names
+- explicit targets
+- acceptance criteria
+
+Importantly, low specificity alone is not enough to trigger a penalty.
+The penalty only matters when vagueness appears to have caused rework.
+
+That means the tool is trying to avoid a common mistake in scoring systems: penalizing concise prompts that actually worked fine.
+
+### 2. Context Efficiency
+
+This is the most important dimension in the model.
+
+It measures how much new context had to be loaded turn by turn, including:
+
+- average and percentile incremental tokens per turn
+- repeated file reads
+- repeated constraint injection
+- sustained over-context behavior
+
+The key idea here is that prompt waste is often indirect.
+The expensive part is not the original sentence.
+The expensive part is the chain of reads, outputs, and re-reads it causes.
+
+### 3. Rework Rate
+
+This dimension tracks prompting habits that create avoidable loops:
+
+- prompt-induced correction turns
+- repeated restatement of the same constraints
+
+This is the "what part of the churn came from me?" section of the score.
+
+### 4. AI Consistency
+
+Not all rework is the user's fault.
+
+Sometimes the prompt is good, but the model still goes down the wrong path.
+This dimension isolates those cases so the score stays useful.
+
+That split matters a lot.
+If you collapse all corrections into one bucket, the score feels numeric but is not actionable.
+You cannot tell whether the fix is:
+
+- write a better prompt
+- add stronger scaffolding
+- switch tactics
+- or simply recognize that the model was unstable in that session
+
+### 5. Task Completion
+
+This dimension models the shape of the session:
+
+- did productive tool use start soon enough?
+- did the task stay on track?
+- did it converge cleanly?
+- or did it end inside a correction loop?
+
+This turns session quality into something you can reason about rather than just feel.
+
+---
+
+## The Anti-Pattern Layer
+
+The score is only useful if it can explain itself.
+
+That is why the most important output is not really the composite number.
+It is the anti-pattern layer underneath it.
+
+The analyzer currently uses deterministic detectors for patterns such as:
+
+- full error dumps instead of trimmed errors
+- repeated constraints that should live in `CLAUDE.md`
+- correction spirals
+- abandoned sessions
+- vague openers
+- repeated file reads
+- duplicated prompts
+- scope creep
+- missing scaffolding around otherwise specific prompts
+
+Each anti-pattern has:
+
+- a fixed impact budget
+- a mapping to one or more score dimensions
+- a concrete remedy
+- a recoverable cost estimate
+
+That means the score is not just:
+
+> "You got 68."
+
+It is closer to:
+
+> "You lost points here because the same constraint was re-injected across turns, this drove context waste, and this pattern has an estimated recoverable cost."
+
+That is a much more useful form of feedback.
+
+---
+
+## Why Recoverable Cost Matters
+
+I did not want this tool to stop at labels.
+
+It is one thing to say:
+
+- you had repeated corrections
+- you re-read files
+- you pasted overly long errors
+
+It is another thing to say:
+
+> "These behaviors likely cost you real money, and a chunk of that was recoverable."
+
+That framing changes how people use the tool.
+
+A score is interesting.
+A cost estimate is motivating.
+
+Once you can tie waste to habits, fixes become much more obvious:
+
+- move repeated constraints into `CLAUDE.md`
+- trim stack traces before sending them
+- front-load file paths and acceptance criteria
+- split broad tasks earlier
+
+---
+
+## Important Caveats
+
+This is not a claim of perfect financial attribution.
+
+Recoverable cost is best understood as a directional estimate, not an accounting truth. It is a heuristic based on observable waste patterns, bounded deductions, and capped rollups. That makes it useful for prioritization, but not a precise statement that "this exact dollar amount would certainly have been saved."
+
+There are also sessions the analyzer can misread:
+
+- healthy exploration in a genuinely unfamiliar codebase
+- debugging sessions that require trial and error
+- intentionally broad refactors
+- long sessions that are expensive because the task itself was large, not because the prompting was poor
+
+So the intended use is primarily:
+
+- self-benchmarking over time
+- comparing sessions within a project or workflow
+- identifying recurring prompting habits worth fixing
+
+It is not meant to be a universal ranking of developers or a claim about final code quality.
+
+---
+
+## How the Project Evolved Over Time
+
+This did not start as a polished scoring framework.
+
+It evolved in stages.
+
+### Phase 1: "Why are some sessions so much more expensive?"
+
+The earliest version of the idea was basically cost curiosity.
+I wanted to understand why two sessions that felt similar could have very different token bills.
+
+That led to the first big realization: the expensive part was often not the prompt itself, but the tool-output cascade it triggered.
+
+### Phase 2: "Can I identify recurring waste patterns?"
+
+Once I started looking at sessions structurally, the same patterns kept showing up:
+
+- repeated context
+- file thrash
+- vague starts
+- correction loops
+- prompts that looked short and innocent but produced very expensive session behavior
+
+At that point, simple totals were no longer enough.
+The project became an anti-pattern detector.
+
+### Phase 3: "A list of patterns is useful, but I still need a score"
+
+The next step was realizing that pattern detection without a scoring model still leaves a gap.
+
+If you want to answer:
+
+> "Am I improving?"
+
+you need consistency.
+
+That pushed the project toward:
+
+- fixed dimensions
+- explicit weights
+- traceable deductions
+- per-session comparability
+
+### Phase 4: "The score must separate my mistakes from Claude's mistakes"
+
+This was the design change that made the tool much better.
+
+Early scoring approaches tended to lump corrections together.
+That produced a number, but not a diagnosis.
+
+The project improved when it started separating:
+
+- prompt-induced rework
+- model-induced rework
+- session convergence failures
+- context inefficiency
+
+That separation made the output much more actionable.
+
+### Phase 5: "This should not replace Insights, it should plug into it"
+
+Over time the product direction became clearer:
+the right move was not to compete with Claude Insights as a dashboard, but to complement it with a more rigorous measurement layer.
+
+That is what led to the HTML injection path as well.
+Instead of forcing a separate experience, the analyzer can now enrich the report developers are already looking at.
+
+---
+
+## Why I Felt the Need to Build It
+
+At a personal level, I wanted a tool that would have helped me while I was learning how to work well with Claude Code.
+
+I did not just want advice like:
+
+- "be more specific"
+- "use `CLAUDE.md` better"
+- "avoid vague prompts"
+
+I wanted something more concrete:
+
+- show me which session broke down
+- show me where the cost came from
+- tell me whether the issue was my prompt, the session shape, or the model
+- make the tradeoffs visible enough that I can change my habits
+
+That is the product I kept wishing existed.
+
+So I built the version I wanted to use myself.
+
+---
+
+## What I Think Is Still Important to Say Clearly
+
+This tool is not claiming to measure absolute coding quality.
+
+It measures prompting efficiency from what is visible in the logs.
+That is an important limitation.
+
+JSONL logs can tell you:
+
+- what was asked
+- what tools were called
+- how much context was consumed
+- where correction loops appeared
+- whether the session seems to have converged
+
+They cannot perfectly tell you whether the final code was actually good.
+
+So the right claim is not:
+
+> "This tool knows whether Claude solved your task correctly."
+
+The right claim is:
+
+> "This tool can measure how efficiently the session was run, and where prompting behavior appears to have created waste."
+
+That distinction matters.
 
 ---
 
 ## Where This Goes Next
 
-The current tool is a post-session analyzer. You run it after the fact, it scores what happened. That's useful, but the logical evolution builds directly on this foundation:
+Right now, this is a post-session analyzer.
+You run it after the work is done.
 
-**IDE integration** is the highest-leverage near-term path. A VS Code extension that runs the rule engine before you hit send — flagging a prompt with no file path and no function name before the 15-file cascade starts — prevents waste instead of measuring it. Your session history becomes the training data; the IDE becomes the feedback loop.
+But the longer-term direction is obvious:
 
-**MCP server** is the version that closes the loop entirely. An MCP server exposing `analyze_session`, `suggest_claude_md_additions`, and `build_prompt_library` would let Claude itself access your efficiency history mid-session — preemptively asking for clarifying information when it detects a pattern that historically led to correction spirals in your projects. This is where the data model this tool builds becomes genuinely compound in value.
+- use session history to improve future prompting
+- detect repeated constraints and promote them into `CLAUDE.md`
+- move from post-mortem analysis toward pre-send guidance
+- eventually build feedback loops directly into the coding workflow
 
-**Proxy layer** is the most ambitious path. A local HTTPS proxy between Claude Code and the Anthropic API — set one environment variable, every prompt routes through the optimizer first. Real-time scoring, pre-send warnings, automatic CLAUDE.md injection, smart model routing. The proxy catches the mistake before a token is spent.
-
-**Team analytics** is the natural enterprise extension. The deterministic rule engine produces consistent measurements across users, which means you can aggregate: token spend per feature, prompt quality scores across a team, cost per PR. The data model supports it today.
+The real ambition is not just to score past sessions.
+It is to help create better future ones.
 
 ---
 
-## It's Open Source
+## How to Use the CLI
 
-The tool is MIT-licensed and available now. It's a Python CLI — `pip install -e .` and point it at your Claude session logs.
+The tool is a local CLI. You point it at your Claude Code session logs and either export a standalone report or inject the analysis directly into Claude Insights.
+
+Basic install:
 
 ```bash
-ai-dev analyze ~/.claude/logs/ --dedupe --export report.md
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
 ```
 
-It supports configurable pricing profiles for cost estimation and exports detailed Markdown reports. No cloud dependency, no API calls required for core analysis.
+Generate a Markdown report from Claude session logs:
 
-**GitHub:** [github.com/abhinavag-svg/ai-coding-sessionprompt-analyzer](https://github.com/abhinavag-svg/ai-coding-sessionprompt-analyzer)
+```bash
+ai-dev analyze ~/.claude/projects --export report.md
+```
 
-If you're using Claude Insights and want a complementary view — one that gives you a reproducible number per session, dimension-level subscores you can track over time, and a dollar figure attached to each anti-pattern — this is that tool. Contributions welcome. The rule engine is extensible: adding a new anti-pattern is a function returning a rule ID, severity, description, and impact estimate. If you've found a prompting pattern that wastes tokens, open a PR.
+Inject the analysis into Claude Insights HTML:
+
+```bash
+/insights
+ai-dev analyze ~/.claude/projects --insights-html ~/.claude/usage-data/report.html
+```
+
+Estimate min/max cost ranges with different pricing assumptions:
+
+```bash
+ai-dev cost-range ~/.claude/projects
+```
+
+The HTML injection path is the most compelling day-to-day workflow because it lets you keep Claude Insights as the main reading surface while layering in session efficiency, project cost summary, and token cost by anti-pattern from `ai-dev`.
+
+If you want recommendations beyond the deterministic scoring path, there is also an optional recommendation mode documented in the repo, but the core analyzer works locally without needing an LLM call for the score itself.
 
 ---
 
-*Built with Claude. Scored by the tool that was built with Claude. It's prompts all the way down.*
+## Closing Thought
+
+Claude Insights helped prove that analyzing coding-agent behavior is worthwhile.
+This project comes from the next question:
+
+> "What if I also want a session-level measurement system I can audit, compare, and improve against?"
+
+That is the gap this tool tries to fill.
+
+Not instead of Insights.
+Alongside it.
+
+If Insights gives the story, this tool tries to give the scorecard.
+
+And when you are trying to get better at something, having both is a lot more useful than having only one.

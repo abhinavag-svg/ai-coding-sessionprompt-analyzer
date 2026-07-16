@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-AI Coding Prompt Optimizer evaluates Claude coding session efficiency from JSONL logs and produces practical, evidence-based reports that help reduce token waste.
+AI Coding Prompt Optimizer evaluates Claude Code and Codex session efficiency from JSONL logs and produces practical, evidence-based reports that help reduce token waste.
 
 Primary objective:
 
@@ -14,7 +14,7 @@ For the full scoring model, anti-pattern catalog, detection logic, and design de
 
 Included:
 
-- JSONL log parsing and normalization
+- Source-specific Claude Code and Codex JSONL adapters with a shared normalized event model
 - Token/cost estimation with configurable pricing profiles
 - Deterministic feature extraction and rule evaluation
 - Efficiency report generation with anti-pattern analysis
@@ -30,23 +30,28 @@ Not included:
 
 Required:
 
-- A directory containing one or more `.jsonl` session logs
+- A directory containing Claude Code session JSONL or Codex rollout JSONL
+- Source selector (`--source claude` or `--source codex`)
 
 Optional:
 
 - Pricing file (`--pricing-file`)
+- Bundled pricing profile (`--pricing-profile`)
+- Current repository filter (`--current-repo-only`)
 - Scoring config (`--scoring-config`)
 - Recommendation runtime config (`--llm-model`, `--llm-endpoint`, `--llm-timeout-sec`)
 
 ## 4. Pipeline
 
-1. Parse JSONL events
+1. Parse JSONL through the selected source adapter
 2. Normalize usage/cost/event metadata
 3. Extract turn and session features
 4. Evaluate deterministic rules
 5. Compute score outputs
 6. Render CLI and Markdown reports
-7. Optionally enrich with local LLM recommendations
+7. Render standalone evidence HTML and safely augment Claude Insights
+8. Propose evidence-backed project instructions for human review
+9. Optionally enrich with local LLM recommendations
 
 ## 5. Outputs
 
@@ -59,6 +64,14 @@ Report includes:
 - Most expensive prompts with annotations
 - Best prompts for reference
 - Technical metrics (collapsed by default)
+
+HTML outputs:
+
+- Claude Insights runtime augmentation using a versioned JSON data island and DOM APIs
+- Codex standalone reporting from `~/.codex/sessions`, with token-first output when model pricing is unavailable
+- Repo-only filtering so multi-project Codex or Claude histories can be scoped to the active checkout
+- Standalone evidence report with per-session and per-finding drill-downs
+- Separate suggested-instructions Markdown for review; `AGENTS.md` and `CLAUDE.md` are never modified automatically
 
 ### Anti-Patterns Detected
 
@@ -104,6 +117,7 @@ Failure handling:
 
 Primary commands:
 
+- `ai-dev insights` — One-command enhanced Insights, standalone evidence report, and reviewable instruction candidates
 - `ai-dev analyze` — Analyze efficiency and generate report
 - `ai-dev cost-range` — Compute cost estimates across pricing profiles
 

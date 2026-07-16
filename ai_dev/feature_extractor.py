@@ -153,6 +153,7 @@ def _is_assistant_turn(turn: Dict[str, Any]) -> bool:
 _SYNTHETIC_USER_PROMPT_FLAGS = frozenset(
     {
         "agent_generated_meta",
+        "subagent_user",
         "telemetry_injected",
         "tool_result_only",
         "empty_prompt",
@@ -179,7 +180,13 @@ def _synthetic_reasons(flags: List[str]) -> List[str]:
     return [f for f in (flags or []) if f in _SYNTHETIC_USER_PROMPT_FLAGS]
 
 
-def _prompt_flags(prompt_text: str, tool_events: List[Dict[str, Any]], agent_type: str, agent_id: str) -> List[str]:
+def _prompt_flags(
+    prompt_text: str,
+    tool_events: List[Dict[str, Any]],
+    agent_type: str,
+    agent_id: str,
+    is_meta: bool = False,
+) -> List[str]:
     """
     Best-effort provenance flags for user prompt events.
 
@@ -189,6 +196,8 @@ def _prompt_flags(prompt_text: str, tool_events: List[Dict[str, Any]], agent_typ
     flags: List[str] = []
     t = (prompt_text or "").strip()
     low = t.lower()
+    if is_meta:
+        flags.append("agent_generated_meta")
     if agent_type == "subagent" or agent_id.startswith("acompact"):
         flags.append("subagent_user")
     if "<ide_opened_file>" in low or "the user opened the file" in low:
@@ -200,6 +209,12 @@ def _prompt_flags(prompt_text: str, tool_events: List[Dict[str, Any]], agent_typ
     if "<analysis>" in low and "do not use any tools" in low:
         flags.append("agent_generated_meta")
     if "this session is being continued from a previous conversation" in low:
+        flags.append("agent_generated_meta")
+    if low.startswith("base directory for this skill:"):
+        flags.append("agent_generated_meta")
+    if "<task-notification>" in low or "<local-command-caveat>" in low:
+        flags.append("agent_generated_meta")
+    if "<command-name>" in low and "<command-message>" in low:
         flags.append("agent_generated_meta")
 
     if not t:
@@ -235,7 +250,7 @@ def _classify_prompt_origin(
         origin = "non_user"
     elif "tool_result_only" in (prompt_flags or []):
         origin = "tool_result_only"
-    elif "agent_generated_meta" in (prompt_flags or []):
+    elif "agent_generated_meta" in (prompt_flags or []) or "subagent_user" in (prompt_flags or []):
         origin = "agent_generated_meta"
     elif "telemetry_injected" in (prompt_flags or []) or ide_injected_chars > 0:
         authored_ratio = 1.0 - ide_ratio if total_text_chars > 0 else 0.0
@@ -360,7 +375,17 @@ def extract_turn_features(turn: Dict[str, Any], index: int) -> Dict[str, Any]:
     is_scored_turn = is_user_turn or is_assistant_turn
     agent_type = str(turn.get("_agent_type", "primary"))
     agent_id = str(turn.get("_agent_id", "primary"))
-    flags = _prompt_flags(text, tool_events, agent_type=agent_type, agent_id=agent_id) if is_user_turn else []
+    flags = (
+        _prompt_flags(
+            text,
+            tool_events,
+            agent_type=agent_type,
+            agent_id=agent_id,
+            is_meta=bool(turn.get("isMeta", False)),
+        )
+        if is_user_turn
+        else []
+    )
 
     # V2: turn semantics and shared correction/extension signals.
     tokens_for_heuristics = tokens if tokens > 0 else approx_text_tokens(text)

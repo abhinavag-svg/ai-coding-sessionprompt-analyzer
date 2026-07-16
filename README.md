@@ -1,6 +1,6 @@
 # AI Coding Prompt Optimizer
 
-Analyze Claude Code session logs to measure prompt efficiency, identify token waste, and get cost recovery recommendations.
+Analyze Claude Code and Codex session logs to measure prompt efficiency, identify token waste, and get evidence-backed recommendations.
 
 **Core insight**: 80% of token costs come from tool outputs (file reads, bash results, repeated corrections), not your prompts. This tool makes that visible.
 
@@ -15,30 +15,65 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-## Get Started (HTML Report)
+## Claude Code
 
-The best way to view results is **injected into Claude Code's Insights report**.
-
-### Step 1: Generate Insights HTML
-
-In Claude Code, run:
-```
-/insights
-```
-This generates `~/.claude/usage-data/report.html` (it shows your work activity, projects, sessions, etc.)
-
-### Step 2: Inject ai-dev Token Economics
+Create both an enhanced Claude Insights report and a separate evidence drill-down:
 
 ```bash
-ai-dev analyze ~/.claude/projects --insights-html ~/.claude/usage-data/report.html
+ai-dev insights
 ```
 
-This adds three sections to your Insights HTML:
-- **Project Cost Summary** – total spend, waste %, recoverable cost per project
-- **Session Efficiency** – top sessions ranked by cost with efficiency scores
-- **Token Cost by Anti-Pattern** – where waste comes from (full errors pasted, repeated constraints, etc.)
+The command automatically finds `~/.claude/projects` and the latest report under
+`~/.claude/usage-data`. Run `ai-dev insights --refresh` if Claude Insights needs
+to be regenerated first.
 
-> **📌 Note**: After running the command above, open `~/.claude/usage-data/report.html` in your browser to see the injected sections alongside your original Insights data.
+It produces:
+
+- **Enhanced Claude Insights** — Token Economics is added at runtime without rewriting Anthropic's existing document structure.
+- **Standalone evidence report** — session and finding drill-downs, scoring evidence, remedies, and reviewable project-instruction candidates.
+- **Suggested project instructions** — a small Markdown candidate file that can be reviewed before copying useful rules into `AGENTS.md` or `CLAUDE.md`.
+
+The analyzer never edits `CLAUDE.md` or `AGENTS.md` automatically. Suggested
+instructions must be reviewed and copied explicitly.
+
+### Existing or custom Insights report
+
+```bash
+ai-dev insights --insights-html path/to/report.html --output path/to/evidence.html --instructions-output path/to/suggestions.md
+```
+
+Runtime augmentation uses a versioned JSON data island and DOM APIs. User-derived
+content is rendered with `textContent`, so prompt excerpts cannot inject markup or
+scripts into the report.
+
+## Codex
+
+Analyze the local Codex rollout history with the same scoring and evidence layer:
+
+```bash
+ai-dev insights --source codex --current-repo-only
+```
+
+This automatically reads `~/.codex/sessions` and writes two local artifacts under
+`.ai-dev/` in the current directory:
+
+- A standalone HTML evidence report grouped by the repository recorded in each rollout.
+- Reviewable `AGENTS.md` instruction candidates promoted only from recurring evidence.
+
+Codex has no Claude Insights HTML page to augment. Token totals come from Codex
+`token_count` events. Dollar estimates are omitted unless you provide a pricing
+profile matching the recorded Codex model names, or use a bundled pricing profile:
+
+```bash
+ai-dev insights --source codex --pricing-file pricing.json
+ai-dev insights --source codex --pricing-profile aggressive
+```
+
+`--current-repo-only` is recommended for Codex so sessions from other repositories
+under `~/.codex/sessions` do not get mixed into the same analysis run.
+
+Session logs can contain prompts, tool arguments, and outputs. Reports stay local,
+escape user-derived markup, and redact common credential formats before export.
 
 ### Example: What You'll See
 
@@ -67,6 +102,24 @@ This adds three sections to your Insights HTML:
 ai-dev analyze ~/.claude/projects --export report.md
 ```
 
+For Codex JSONL directly:
+
+```bash
+ai-dev analyze ~/.codex/sessions --source codex --current-repo-only --standalone-html codex-evidence.html
+```
+
+### Standalone Evidence Report
+
+```bash
+ai-dev analyze ~/.claude/projects --standalone-html evidence.html
+```
+
+### Reviewable Project Instructions
+
+```bash
+ai-dev analyze ~/.claude/projects --instructions-output suggested-instructions.md
+```
+
 ### Cost Range Estimates
 ```bash
 ai-dev cost-range ~/.claude/projects
@@ -86,7 +139,9 @@ ai-dev analyze ~/.claude/projects --llm-recommendations
 - **AI Consistency** – Did model errors cause rework?
 - **Task Completion** – Did the session converge successfully?
 
-Each dimension scores 0–100. Composite score is clamped to [0, 100].
+Dimensions contribute weighted points totaling 100. The composite score is
+clamped to [0, 100]. Cost and "estimated avoidable" figures are heuristic and
+should be interpreted alongside the included evidence.
 
 ## Anti-Patterns Detected
 
@@ -105,6 +160,14 @@ Three cost modes:
 - **DERIVED_ONLY**: Calculate from token counts
 
 Custom pricing: `--pricing-file pricing.json`
+
+Bundled pricing profiles: `--pricing-profile conservative|default|aggressive`
+
+Export a bundled template to customize:
+
+```bash
+ai-dev pricing-template pricing.json --profile aggressive
+```
 
 ## Development
 
