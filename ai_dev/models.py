@@ -18,6 +18,17 @@ class CostMode(str, Enum):
     DERIVED_ONLY = "derived-only"
 
 
+class SessionSource(str, Enum):
+    CLAUDE = "claude"
+    CODEX = "codex"
+
+
+class PricingProfile(str, Enum):
+    DEFAULT = "default"
+    CONSERVATIVE = "conservative"
+    AGGRESSIVE = "aggressive"
+
+
 @dataclass
 class UsageBuckets:
     input_tokens: int = 0

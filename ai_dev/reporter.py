@@ -1087,131 +1087,22 @@ def export_markdown_report(report: Dict[str, Any], out_path: str | Path) -> None
     output_path.write_text(build_markdown_report(report), encoding="utf-8")
 
 
-_AI_DEV_INJECTION_MARKER = "<!-- ai-dev-token-economics-injected -->"
-
-
 def inject_into_insights_html(report: Dict[str, Any], html_path: Path, sessions_scan_path: Optional[Path] = None) -> None:
-    """Inject ai-dev token economics section into Claude Code Insights HTML report.
+    """Safely augment Claude Insights without rewriting its document structure.
 
-    Args:
-        report: The ai-dev report dict
-        html_path: Path to the Insights HTML file to modify (in place)
-        sessions_scan_path: Optional path to scan for session JSONL files (for sample prompts)
+    The runtime block uses DOM APIs when the report is opened. This leaves
+    Anthropic-authored markup untouched and makes optional placements resilient
+    when the Insights layout changes.
     """
-    # Read the HTML file
-    if not html_path.exists():
-        raise FileNotFoundError(f"Insights HTML file not found: {html_path}")
+    _ = sessions_scan_path  # Retained for CLI/API compatibility.
+    from .html_reports import augment_insights_html
 
-    html_content = html_path.read_text(encoding="utf-8")
-
-    if _AI_DEV_INJECTION_MARKER in html_content:
-        raise ValueError(
-            f"{html_path} already has ai-dev token economics injected. "
-            "Regenerate a fresh Insights report (e.g. `claude -p /insights` or --refresh-insights) "
-            "before injecting again, to avoid duplicating sections."
-        )
-
-    # Extract data from report
-    v2 = report.get("v2") or {}
-    project_rollup = v2.get("project_rollup") or {}
-    per_session_v2 = v2.get("per_session_v2") or []
-    session_features = report.get("session_features") or {}
-    total_cost = float(report.get("total_cost_derived", 0.0) or 0.0)
-
-    composite_score = float(project_rollup.get("composite", 0.0) or 0.0)
-    recoverable_cost = float(project_rollup.get("recoverable_cost_total_usd", 0.0) or 0.0)
-    recoverable_pct = (recoverable_cost / total_cost * 100) if total_cost > 0 else 0.0
-    cache_savings = float(session_features.get("estimated_cache_savings", 0.0) or 0.0)
-
-    # Aggregate top 5 cost anti-patterns with project breakdown
-    flag_costs: Dict[str, tuple[float, int]] = {}  # flag_id -> (cost, count)
-    flag_project_costs: Dict[str, Dict[str, tuple[float, int]]] = {}  # flag_id -> project -> (cost, count)
-    uncapped_flag_total = 0.0
-    for session_data in per_session_v2:
-        flags = session_data.get("flags") or []
-        project_folder = session_data.get("project_folder", "unknown")
-        for flag in flags:
-            flag_id = flag.get("flag_id", "unknown")
-            cost = float(flag.get("recoverable_cost_usd", 0.0) or 0.0)
-            occurrences = flag.get("occurrences", 1)
-            uncapped_flag_total += cost
-
-            # Aggregate total counts
-            if flag_id not in flag_costs:
-                flag_costs[flag_id] = (0.0, 0)
-            total, count = flag_costs[flag_id]
-            flag_costs[flag_id] = (total + cost, count + occurrences)
-
-            # Aggregate per-project breakdown
-            if flag_id not in flag_project_costs:
-                flag_project_costs[flag_id] = {}
-            if project_folder not in flag_project_costs[flag_id]:
-                flag_project_costs[flag_id][project_folder] = (0.0, 0)
-            proj_total, proj_count = flag_project_costs[flag_id][project_folder]
-            flag_project_costs[flag_id][project_folder] = (proj_total + cost, proj_count + occurrences)
-
-    # Scale flag costs proportionally if they exceed total recoverable (due to overlapping flag definitions)
-    scaling_factor = (recoverable_cost / uncapped_flag_total) if uncapped_flag_total > 0 else 1.0
-    if scaling_factor < 1.0:
-        # Apply scaling to individual flag costs for display
-        scaled_flag_costs: Dict[str, tuple[float, int]] = {}
-        for flag_id, (total, count) in flag_costs.items():
-            scaled_flag_costs[flag_id] = (round(total * scaling_factor, 6), count)
-        flag_costs = scaled_flag_costs
-
-        # Also scale per-project costs
-        for flag_id in flag_project_costs:
-            for project_folder, (proj_total, proj_count) in flag_project_costs[flag_id].items():
-                flag_project_costs[flag_id][project_folder] = (round(proj_total * scaling_factor, 6), proj_count)
-
-    sorted_flags = sorted(flag_costs.items(), key=lambda x: x[1][0], reverse=True)[:5]
-
-    # Build top 10 session efficiency table
-    efficiency_dist = project_rollup.get("session_efficiency_distribution", [])
-    top_sessions = efficiency_dist[:10]
-
-    # 1. Inject token economics stats into the stats-row (after Msgs/Day)
-    stats_inject = f'      <div class="stat"><div class="stat-value">${total_cost:.2f}</div><div class="stat-label">Total Spend</div></div>\n      <div class="stat"><div class="stat-value">${recoverable_cost:.2f}</div><div class="stat-label">Recoverable</div></div>\n      <div class="stat"><div class="stat-value">{composite_score:.0f}/100</div><div class="stat-label">Efficiency</div></div>'
-    import re
-    # Match the Msgs/Day stat and inject after it
-    stats_pattern = r'(<div class="stat"><div class="stat-value">[\d.]+</div><div class="stat-label">Msgs/Day</div></div>)'
-    html_content = re.sub(
-        stats_pattern,
-        rf'\1\n{stats_inject}',
-        html_content,
-        count=1
-    )
-
-    # 1b. Inject standalone project cost summary table
-    html_content = _inject_project_costs_table(html_content, per_session_v2)
-
-    # 2. Inject project area costs (Section 2)
-    html_content = _inject_project_area_costs(html_content, per_session_v2)
-
-    # 3. Inject session efficiency table with sample prompts (Section 4)
-    if sessions_scan_path:
-        html_content = _inject_session_efficiency_table(html_content, top_sessions, per_session_v2, sessions_scan_path)
-
-    # 4. Inject costs into friction categories (anti-patterns section)
-    html_content = _inject_antipattern_costs(html_content, sorted_flags, flag_project_costs)
-
-    # 5. Delete the fun-ending section
-    html_content = re.sub(
-        r'\s*<div class="fun-ending">.*?</div>\s*',
-        '',
-        html_content,
-        flags=re.DOTALL
-    )
-
-    # 6. Mark this file as injected so a rerun refuses to duplicate sections
-    html_content = html_content.replace("</body>", f"{_AI_DEV_INJECTION_MARKER}\n</body>", 1)
-
-    # Write back
-    html_path.write_text(html_content, encoding="utf-8")
+    augment_insights_html(report, html_path)
 
 
 def _inject_project_area_costs(html_content: str, per_session_v2: List[Dict[str, Any]]) -> str:
     """Inject exact project area costs into the 'What You Work On' section."""
+    raise RuntimeError("Legacy structural HTML injection is disabled; use inject_into_insights_html().")
     import re
     from html import unescape
 
@@ -1282,6 +1173,7 @@ def _inject_project_area_costs(html_content: str, per_session_v2: List[Dict[str,
 
 def _inject_project_costs_table(html_content: str, per_session_v2: List[Dict[str, Any]]) -> str:
     """Inject standalone project cost summary table after stats-row."""
+    raise RuntimeError("Legacy structural HTML injection is disabled; use inject_into_insights_html().")
     import re
 
     if not per_session_v2:
@@ -1373,6 +1265,7 @@ def _inject_project_costs_table(html_content: str, per_session_v2: List[Dict[str
 
 def _find_first_user_prompt(session_id: str, scan_path: Path) -> str:
     """Find and return the first meaningful user message from a session's JSONL file."""
+    raise RuntimeError("Legacy prompt interpolation is disabled; use the escaped report payload.")
     import json
 
     # System tags to skip (IDE context, command caveats, etc.)
@@ -1420,6 +1313,7 @@ def _find_first_user_prompt(session_id: str, scan_path: Path) -> str:
 
 def _inject_session_efficiency_table(html_content: str, top_sessions: List[Dict[str, Any]], per_session_v2: List[Dict[str, Any]], scan_path: Path) -> str:
     """Inject session efficiency table with sample prompts."""
+    raise RuntimeError("Legacy structural HTML injection is disabled; use inject_into_insights_html().")
     import re
 
     if not top_sessions:
@@ -1493,6 +1387,7 @@ def _inject_session_efficiency_table(html_content: str, top_sessions: List[Dict[
 
 def _inject_antipattern_costs(html_content: str, sorted_flags: List[tuple[str, tuple[float, int]]], flag_project_costs: Dict[str, Dict[str, tuple[float, int]]]) -> str:
     """Inject anti-pattern costs into the friction categories section with project breakdown."""
+    raise RuntimeError("Legacy structural HTML injection is disabled; use inject_into_insights_html().")
     if not sorted_flags:
         return html_content
 
@@ -1554,6 +1449,7 @@ def _build_insights_injection_html(
     per_session_v2: List[Dict[str, Any]],
 ) -> str:
     """Build the HTML injection string using Insights CSS classes."""
+    raise RuntimeError("Legacy raw HTML construction is disabled; use build_insights_runtime_block().")
 
     lines = []
     lines.append("")

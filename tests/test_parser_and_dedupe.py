@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ai_dev.dedupe import dedupe_events
 from ai_dev.parser import iter_normalized_events
+from ai_dev.codex_parser import iter_codex_events
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -15,6 +16,137 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 class TestParserAndDedupe(unittest.TestCase):
+    def test_codex_rollout_normalizes_messages_tools_usage_and_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "rollout-test.jsonl"
+            _write_jsonl(
+                p,
+                [
+                    {
+                        "timestamp": "2026-07-15T00:00:00Z",
+                        "type": "session_meta",
+                        "payload": {"id": "codex-session", "cwd": "/work/demo"},
+                    },
+                    {
+                        "timestamp": "2026-07-15T00:00:01Z",
+                        "type": "turn_context",
+                        "payload": {"model": "gpt-5.4", "cwd": "/work/demo"},
+                    },
+                    {
+                        "timestamp": "2026-07-15T00:00:02Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "Fix src/app.py and run tests."}],
+                        },
+                    },
+                    {
+                        "timestamp": "2026-07-15T00:00:03Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "function_call",
+                            "call_id": "call-1",
+                            "name": "exec_command",
+                            "arguments": json.dumps({"cmd": "pytest -q"}),
+                        },
+                    },
+                    {
+                        "timestamp": "2026-07-15T00:00:04Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "Tests pass."}],
+                        },
+                    },
+                    {
+                        "timestamp": "2026-07-15T00:00:05Z",
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "last_token_usage": {
+                                    "input_tokens": 100,
+                                    "cached_input_tokens": 80,
+                                    "output_tokens": 10,
+                                },
+                                "total_token_usage": {
+                                    "input_tokens": 100,
+                                    "cached_input_tokens": 80,
+                                    "output_tokens": 10,
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "timestamp": "2026-07-15T00:00:06Z",
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {
+                                "last_token_usage": {
+                                    "input_tokens": 100,
+                                    "cached_input_tokens": 80,
+                                    "output_tokens": 10,
+                                },
+                                "total_token_usage": {
+                                    "input_tokens": 100,
+                                    "cached_input_tokens": 80,
+                                    "output_tokens": 10,
+                                },
+                            },
+                        },
+                    },
+                ],
+            )
+
+            events = list(iter_codex_events(p))
+
+        self.assertEqual(len(events), 2)
+        user, assistant = events
+        self.assertEqual(user.session_id, "codex-session")
+        self.assertEqual(user.payload["_project_folder"], "demo")
+        self.assertEqual(assistant.model, "gpt-5.4")
+        self.assertEqual(assistant.usage.input_tokens, 20)
+        self.assertEqual(assistant.usage.cache_read_tokens, 80)
+        self.assertEqual(assistant.usage.output_tokens, 10)
+        tool = assistant.payload["message"]["content"][1]
+        self.assertEqual(tool["name"], "Bash")
+        self.assertEqual(tool["input"]["cmd"], "pytest -q")
+
+    def test_codex_subagent_rollout_groups_under_parent_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "rollout-subagent.jsonl"
+            _write_jsonl(
+                p,
+                [
+                    {
+                        "timestamp": "2026-07-15T00:00:00Z",
+                        "type": "session_meta",
+                        "payload": {
+                            "id": "guardian-session",
+                            "parent_thread_id": "parent-session",
+                            "cwd": "/work/demo",
+                        },
+                    },
+                    {
+                        "timestamp": "2026-07-15T00:00:01Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "Review transcript delta."}],
+                        },
+                    },
+                ],
+            )
+            event = list(iter_codex_events(p))[0]
+
+        self.assertEqual(event.session_id, "parent-session")
+        self.assertEqual(event.agent_id, "guardian-session")
+        self.assertEqual(event.payload["_agent_type"], "subagent")
+
     def test_parser_extracts_ids_and_usage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "session.jsonl"

@@ -241,6 +241,12 @@ response: Response {
         self.assertIn("per_session_v2", report["v2"])
         self.assertEqual(len(report["v2"]["per_session_v2"]), 2)
         self.assertEqual(int(report["v2"]["project_rollup"]["session_count"]), 2)
+        sessions = report["v2"]["per_session_v2"]
+        expected = sum(
+            float(row["scores"]["composite"]) * float(row["session_features"]["total_cost"])
+            for row in sessions
+        ) / sum(float(row["session_features"]["total_cost"]) for row in sessions)
+        self.assertAlmostEqual(float(report["v2"]["project_rollup"]["composite"]), expected, places=2)
 
 
 if __name__ == "__main__":

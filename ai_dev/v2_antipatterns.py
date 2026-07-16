@@ -171,7 +171,7 @@ def detect_antipatterns_v2(
     gate1_threshold = 6 if is_orchestrated else 5
     file_thrash_free_reads = 5 if is_orchestrated else int(cfg.file_thrash_free_reads)
     skip_correction_spiral = is_orchestrated
-    scope_creep_threshold = 150 if is_orchestrated else 300
+    scope_creep_threshold = 450 if is_orchestrated else 300
 
     # Check if session started with slash command (programmatic invocation)
     first_user = next((t for t in scorable if t.get("is_user_turn")), None)
@@ -319,7 +319,7 @@ def detect_antipatterns_v2(
         ev: List[Dict[str, Any]] = []
         repeated_constraint_tokens = 0
         for c, cnt in top[:3]:
-            ev.extend([{"note": f"`{c}` (x{cnt})", **e} for e in constraint_evidence.get(c, [])[:1]])
+            ev.extend([{**e, "note": f"`{c}` (x{cnt})"} for e in constraint_evidence.get(c, [])[:1]])
         for c, cnt in top:
             repeated_constraint_tokens += approx_text_tokens(c) * max(0, cnt - 1)
         add_flag(
@@ -566,7 +566,7 @@ def detect_antipatterns_v2(
         )
 
     # scope_creep (Session Convergence 100%): many turns and tool variety increases in last third.
-    # Threshold adjusted for orchestrated sessions: 150 (normal) vs 300 (orchestrated adjusts upward).
+    # Orchestrated sessions naturally contain more turns, so their threshold is higher.
     if len(scorable) > scope_creep_threshold:
         assistants = [t for t in scorable if t.get("is_assistant_turn")]
         if len(assistants) >= 30:

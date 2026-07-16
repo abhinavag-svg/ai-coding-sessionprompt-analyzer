@@ -1,5 +1,5 @@
 # AI Coding Prompt Analyzer — Technical Spec
-*Post-mortem analysis of Claude coding session efficiency from JSONL logs*
+*Post-mortem analysis of Claude Code and Codex session efficiency from JSONL logs*
 
 ---
 
@@ -23,7 +23,7 @@
 
 The core question this tool tries to answer:
 
-> **Given what I was trying to build, did I use Claude well — in terms of cost, turns, and prompting habits?**
+> **Given what I was trying to build, did I use my coding agent well — in terms of tokens, cost, turns, and prompting habits?**
 
 That requires three things:
 
@@ -43,7 +43,24 @@ The composite score is kept for longitudinal tracking but it's no longer the hea
 
 ## 2. Data Source and Ceiling
 
-Everything comes from JSONL logs. No external signals, no outcome labeling.
+Everything comes from local JSONL logs. No external signals, no outcome labeling.
+
+Supported adapters:
+
+- Claude Code session events under `~/.claude/projects`
+- Codex rollout events under `~/.codex/sessions`
+
+Optional scoping filters:
+
+- `--current-repo-only` filters normalized events to the active git repository
+- Codex uses recorded cwd metadata for exact path-prefix matching
+- Claude uses encoded project directory names, including Claude worktree naming
+
+Codex rollout JSONL is treated as a versioned adapter boundary because it is local
+product state rather than a stable public interchange contract. `session_meta`
+provides project identity, `turn_context` supplies the model, `response_item`
+supplies authored messages and tool calls, and `event_msg.token_count` supplies
+per-round usage. Unknown records are ignored.
 
 Fields used:
 
@@ -52,8 +69,9 @@ Fields used:
 - Tool use blocks: tool name, invocation count per turn
 - Message content: user prompt text for pattern detection
 - Cost: derived from token counts + pricing file, or direct if present
+- Pricing profiles: built-in default tables plus bundled conservative/aggressive variants
 
-**The honest ceiling:** JSONL cannot tell you whether Claude's output was correct. That's proxied via convergence signals — did tool use stabilize, or did the session end mid-correction? The analyzer measures prompting efficiency, not result quality.
+**The honest ceiling:** JSONL cannot tell you whether the agent's output was correct. That's proxied via convergence signals — did tool use stabilize, or did the session end mid-correction? The analyzer measures prompting efficiency, not result quality.
 
 ---
 

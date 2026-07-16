@@ -5,13 +5,26 @@
 # Virtual envs
 .venv/
 venv/
+/source/
 
 # Python artifacts
 __pycache__/
 *.pyc
+*.egg-info/
+build/
+dist/
 
 # Generated reports / analysis outputs
 report*.md
+ai-dev-evidence-*.html
+ai-dev-instructions-*.md
+ai-dev-*-evidence-*.html
+ai-dev-*-instructions-*.md
+.ai-dev/
+blog-assets/
+blog-output/
+blog_output_test/
+/blogpost.html
 
 # OS/editor noise
 .DS_Store
